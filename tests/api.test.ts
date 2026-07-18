@@ -7,7 +7,7 @@ import {
   sendCommunityMessage,
   sendUserMessage,
 } from "../src/api.ts";
-import type { MobileSession } from "@takosjp/takosumi-mobile-kit";
+import type { MobileSession } from "@takosjp/mobile-kit";
 
 const originalFetch = globalThis.fetch;
 afterEach(() => {

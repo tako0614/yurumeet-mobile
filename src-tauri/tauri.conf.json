@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Yurumeet",
+  "version": "0.1.0",
+  "identifier": "com.yurumeet",
+  "build": {
+    "beforeDevCommand": "bun run dev:web",
+    "beforeBuildCommand": "bun run build:web",
+    "devUrl": "http://localhost:1440",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Yurumeet",
+        "width": 390,
+        "height": 844,
+        "resizable": true
+      }
+    ],
+    "security": { "csp": null }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "android": { "minSdkVersion": 28 }
+  },
+  "plugins": {
+    "deep-link": {
+      "mobile": [{ "scheme": ["yurume"], "appLink": false }],
+      "desktop": { "schemes": ["yurume"] }
+    }
+  }
+}

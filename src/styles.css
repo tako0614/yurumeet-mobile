@@ -1,0 +1,132 @@
+@import "@takosjp/takosumi-mobile-kit/mobile-shell.css";
+:root {
+  --shell-bg: #fff7f7;
+  --shell-card: #fff;
+  --shell-text: #271b1c;
+  --shell-muted: #6b5b5d;
+  --shell-subtle: #786567;
+  --shell-strong: #3d292b;
+  --shell-label: #513638;
+  --shell-border: #f0d6d8;
+  --shell-input-border: #e7bec2;
+  --shell-control-border: #dca8ad;
+  --shell-metric-border: #f3dee0;
+  --shell-soft: #fffafa;
+}
+body {
+  background:
+    radial-gradient(circle at 50% 4%, rgb(255 59 63 / 11%), transparent 34%),
+    var(--shell-bg);
+}
+.onboarding-brand {
+  width: 92px;
+  border-radius: 46% 46% 50% 50% / 55% 55% 45% 45%;
+  background: linear-gradient(145deg, #ff5054, #ff3035);
+  font-size: 1rem;
+}
+.password-sign-in {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+.password-sign-in input {
+  border: 1px solid var(--shell-input-border);
+  border-radius: 14px;
+  padding: 12px;
+  font: inherit;
+}
+.talk-list {
+  display: grid;
+  margin-top: 18px;
+  border-top: 1px solid var(--shell-border);
+}
+.talk-row {
+  display: grid;
+  grid-template-columns: 52px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  border: 0;
+  border-bottom: 1px solid var(--shell-border);
+  padding: 13px 2px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+.talk-row img,
+.avatar-fallback {
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+.avatar-fallback {
+  display: grid;
+  place-items: center;
+  background: #ffe4e5;
+  color: #c92329;
+  font-weight: 800;
+}
+.talk-copy,
+.talk-meta {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+.talk-copy small {
+  overflow: hidden;
+  color: var(--shell-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.talk-meta {
+  justify-items: end;
+  color: var(--shell-muted);
+}
+.talk-meta b {
+  display: grid;
+  min-width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 999px;
+  background: #ff3b3f;
+  color: #fff;
+  font-size: 0.72rem;
+}
+.empty {
+  color: var(--shell-muted);
+  text-align: center;
+}
+.talk-error {
+  margin: 0;
+  border: 1px solid #e6b8b8;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #fff4f4;
+  color: #8b2525;
+}
+.talk-surface,
+.message-list {
+  display: grid;
+  gap: 10px;
+}
+.message-list li {
+  max-width: 84%;
+}
+.message-list li.mine {
+  margin-left: auto;
+}
+.message-bubble {
+  border-radius: 18px 18px 18px 6px;
+  background: #fff;
+}
+.message-list li.mine .message-bubble {
+  border-radius: 18px 18px 6px;
+  background: #ffe3e4;
+}
+.message-bubble p {
+  margin: 0 0 4px;
+  white-space: pre-wrap;
+}
+.message-bubble small {
+  color: var(--shell-muted);
+}

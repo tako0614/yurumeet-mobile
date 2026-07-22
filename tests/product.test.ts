@@ -3,7 +3,12 @@ import {
   createDirectDeployHref,
   createFirstRunActions,
   createHostCenterHref,
+  parseMobileConnectInput,
 } from "@takosjp/mobile-kit";
+import {
+  createTakosumiAppConnectHref,
+  takosumiAppHandoffFromSearch,
+} from "takosumi-contract/app-handoff.ts";
 import { productAdapter } from "../src/product.ts";
 test("Yurumeet uses the yurume client on the shared Yurucommu server", () => {
   expect(productAdapter.product).toBe("yurume");
@@ -30,6 +35,31 @@ test("Yurumeet exposes manual, Cloudflare, and Takosumi setup paths", () => {
     "https://app.takosumi.com/new",
   );
   expect(hostCenter.searchParams.get("product")).toBe("yurumeet");
+});
+
+// Takosumi echoes back the catalog key it was handed, not the client key, so the
+// return deep link carries `yurumeet` while the app's own product is `yurume`.
+test("Yurumeet accepts the Host Center return deep link it asked for", () => {
+  const handoff = takosumiAppHandoffFromSearch(
+    new URL(
+      createHostCenterHref({
+        adapter: productAdapter,
+        returnUri: "yurume://connect",
+      }),
+    ).search,
+  );
+  expect(handoff).toBeDefined();
+  const returnHref = createTakosumiAppConnectHref({
+    handoff: handoff!,
+    hostUrl: "https://meet.example",
+    setupTicket: "ticket-1",
+  });
+  expect(returnHref).toBeDefined();
+
+  const payload = parseMobileConnectInput(returnHref!);
+  expect(payload.hostUrl).toBe("https://meet.example");
+  expect(payload.setupTicket).toBe("ticket-1");
+  expect(productAdapter.acceptedConnectProducts).toContain(payload.product!);
 });
 
 test("Yurumeet declares its shared source-module dependencies", async () => {

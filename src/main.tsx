@@ -65,9 +65,15 @@ renderMobileClientApp<YurumeetMobileHome>({
   homeLabel: "トーク",
   copy: {
     eyebrow: "TALK WITH YOUR PEOPLE",
+    // Mirror of yurumeet/public/yurumeet-logo.png; `brandMark` stays as the
+    // fallback glyph.
+    brandLogoUrl: "/brand/yurumeet.png",
     brandMark: "YURU",
     onboardingTitle: "いつもの人と、話そう",
     summary: "自分たちのサーバーでつながる、やさしいトーク。",
+    // Mirror of takosumi/dashboard/public/tako.png, the canonical Takosumi
+    // mark named by docs/reference/design-language.md, instead of a "T".
+    hostCenterIconUrl: "/brand/takosumi.png",
     takosumiActionLabel: "Takosumiで始める",
     takosumiActionDescription: "Takosumiで作ったトーク環境に接続",
     manualActionLabel: "サーバーを自分で入力",

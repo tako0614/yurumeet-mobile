@@ -122,11 +122,13 @@ export async function markTalkAsRead(
 }
 
 export async function registerPush(input: MobilePushRegistrationCallbackInput) {
-  const gateway = normalizeNotificationPusherGatewayUrl(
-    import.meta.env.VITE_YURUMEET_NOTIFICATION_PUSHER_GATEWAY_URL,
-  );
-  if (!gateway)
-    throw new Error("Yurumeet notification gateway is not configured.");
+  // The connected host owns the gateway allowlist and one binary talks to many
+  // self-hosted servers, so the build-time URL is only a fallback: mobile-kit
+  // asks the host first and throws a named error when neither side has one.
+  const gateway =
+    normalizeNotificationPusherGatewayUrl(
+      import.meta.env.VITE_YURUMEET_NOTIFICATION_PUSHER_GATEWAY_URL,
+    ) ?? "";
   const provider = input.registration.provider;
   if (provider !== "apns" && provider !== "fcm")
     throw new Error("Unsupported push provider.");

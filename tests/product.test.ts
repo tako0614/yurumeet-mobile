@@ -1,14 +1,12 @@
 import { expect, test } from "bun:test";
 import {
+  createTakosumiAppConnectHref,
   createDirectDeployHref,
   createFirstRunActions,
   createHostCenterHref,
   parseMobileConnectInput,
-} from "@takosjp/mobile-kit";
-import {
-  createTakosumiAppConnectHref,
   takosumiAppHandoffFromSearch,
-} from "takosumi-contract/app-handoff.ts";
+} from "@takosjp/mobile-kit";
 import { productAdapter } from "../src/product.ts";
 test("Yurumeet uses the yurume client on the shared Yurucommu server", () => {
   expect(productAdapter.product).toBe("yurume");
@@ -62,7 +60,7 @@ test("Yurumeet accepts the Host Center return deep link it asked for", () => {
   expect(productAdapter.acceptedConnectProducts).toContain(payload.product!);
 });
 
-test("Yurumeet declares its shared source-module dependencies", async () => {
+test("Yurumeet depends only on the standalone shared mobile foundation", async () => {
   const pkg = (await Bun.file(
     new URL("../package.json", import.meta.url),
   ).json()) as {
@@ -72,10 +70,8 @@ test("Yurumeet declares its shared source-module dependencies", async () => {
   expect(pkg.dependencies?.["@takosjp/mobile-kit"]).toBe(
     "file:../mobile-kit",
   );
-  expect(pkg.dependencies?.["takosumi-contract"]).toBe(
-    "file:../takosumi/contract",
-  );
-  expect(pkg.scripts?.bootstrap).toContain("../takosumi");
+  expect(pkg.dependencies?.["takosumi-contract"]).toBeUndefined();
+  expect(pkg.scripts?.bootstrap).toBe("bun install --frozen-lockfile");
 });
 
 test("Yurumeet Android identity and secure-keystore floor are product-owned", async () => {

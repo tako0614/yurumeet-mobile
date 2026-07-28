@@ -23,5 +23,10 @@ export const productAdapter: MobileProductAdapter = {
   // `yurumeet/src/styles.css`.
   accentColor: "#ff3b3b",
   mobileScheme: "yurume",
-  oidcScopes: ["openid", "profile", "email", "offline_access"],
+  // The family host exchanges the OIDC result for its own session. This
+  // client neither receives nor stores a provider refresh token.
+  oidcScopes: ["openid", "profile", "email"],
+  // Fail closed before sign-in when a generic Yurucommu-family host cannot
+  // provide the talk API this shell is built around.
+  requiredHostCapabilities: ["client.yurume.messages.v1"],
 };

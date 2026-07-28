@@ -7,7 +7,6 @@ import {
   type MobileSession,
 } from "@takosjp/mobile-kit";
 import {
-  defineMobileHostActions,
   MobileComposeField,
   MobileComposeFooter,
   MobileComposeForm,
@@ -40,13 +39,6 @@ const metrics = [
   { label: "未読", value: (home) => home?.unread },
   { label: "リクエスト", value: (home) => home?.requestCount },
 ] satisfies readonly MobileShellMetric<YurumeetMobileHome>[];
-
-const actions = defineMobileHostActions<YurumeetMobileHome>([
-  { label: "トーク", description: "最近の会話", path: "/" },
-  { label: "友だち", description: "相互フォローとグループ", path: "/contacts" },
-  { label: "通知", description: "メンションと反応", path: "/notifications" },
-  { label: "設定", description: "アカウントと通知", path: "/settings" },
-]);
 
 renderMobileClientApp<YurumeetMobileHome>({
   adapter: productAdapter,
@@ -88,7 +80,10 @@ renderMobileClientApp<YurumeetMobileHome>({
     shortcutsLabel: "メニュー",
   },
   metrics,
-  hostActions: actions,
+  // Talk and contacts are native below. Do not open authenticated web routes
+  // in an external browser: the host session is scoped to this native client
+  // and there is no one-time browser-session handoff contract yet.
+  hostActions: [],
   renderHomeExtra: ({ home, session, refreshHome }) => (
     <TalkScreen home={home} session={session} refreshHome={refreshHome} />
   ),

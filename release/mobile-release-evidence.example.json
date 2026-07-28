@@ -1,0 +1,160 @@
+{
+  "schema": "takos.mobile-release-evidence.v1",
+  "product": "yurume",
+  "productName": "Yurumeet",
+  "bundleId": "com.yurumeet",
+  "releaseVersion": "0.1.0",
+  "generatedAt": "2026-07-01T00:00:00.000Z",
+  "artifacts": {
+    "iosArchive": {
+      "evidenceRef": "private:mobile/yurumeet/ios/Yurumeet.xcarchive",
+      "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "androidAab": {
+      "evidenceRef": "private:mobile/yurumeet/android/yurumeet-release.aab",
+      "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "signing": {
+    "ios": {
+      "teamRef": "private:mobile/yurumeet/apple-team",
+      "provisioningProfileRef": "private:mobile/yurumeet/ios/provisioning-profile"
+    },
+    "android": {
+      "keystoreRef": "private:mobile/yurumeet/android/upload-keystore",
+      "playAppSigning": false
+    }
+  },
+  "nativeSecurity": {
+    "ios": {
+      "result": "not-run",
+      "cases": [
+        "first_store",
+        "cold_restart",
+        "unlock_cancel",
+        "biometric_change",
+        "app_upgrade",
+        "legacy_migration"
+      ],
+      "capturedAt": "2026-07-01T00:00:00.000Z",
+      "evidenceRef": "private:mobile/yurumeet/device-security/ios"
+    },
+    "android": {
+      "result": "not-run",
+      "cases": [
+        "first_store",
+        "cold_restart",
+        "unlock_cancel",
+        "biometric_change",
+        "app_upgrade",
+        "legacy_migration"
+      ],
+      "capturedAt": "2026-07-01T00:00:00.000Z",
+      "evidenceRef": "private:mobile/yurumeet/device-security/android"
+    }
+  },
+  "mobileOidc": {
+    "codeExchange": {
+      "result": "not-run",
+      "cases": ["authorization_code_pkce", "host_session_exchange"],
+      "capturedAt": "2026-07-01T00:00:00.000Z",
+      "evidenceRef": "private:mobile/yurumeet/oidc/code-exchange"
+    },
+    "firstUserProvision": {
+      "result": "not-run",
+      "cases": ["new_account", "repeat_sign_in"],
+      "capturedAt": "2026-07-01T00:00:00.000Z",
+      "evidenceRef": "private:mobile/yurumeet/oidc/first-user-provision"
+    },
+    "scopedApi": {
+      "result": "not-run",
+      "cases": [
+        "auth_me",
+        "allowed_scope",
+        "denied_scope",
+        "wrong_audience_rejected"
+      ],
+      "capturedAt": "2026-07-01T00:00:00.000Z",
+      "evidenceRef": "private:mobile/yurumeet/oidc/scoped-api"
+    }
+  },
+  "remotePush": {
+    "deliveryBackend": {
+      "result": "not-run",
+      "capturedAt": "2026-07-01T00:00:00.000Z",
+      "evidenceRef": "private:mobile/yurumeet/remote-push/backend"
+    },
+    "ios": {
+      "result": "not-run",
+      "cases": [
+        "foreground",
+        "background",
+        "terminated",
+        "tap",
+        "token_rotation"
+      ],
+      "capturedAt": "2026-07-01T00:00:00.000Z",
+      "evidenceRef": "private:mobile/yurumeet/remote-push/ios"
+    },
+    "android": {
+      "result": "not-run",
+      "cases": [
+        "foreground",
+        "background",
+        "terminated",
+        "tap",
+        "token_rotation"
+      ],
+      "capturedAt": "2026-07-01T00:00:00.000Z",
+      "evidenceRef": "private:mobile/yurumeet/remote-push/android"
+    }
+  },
+  "store": {
+    "appStore": {
+      "appRef": "private:app-store-connect/yurumeet",
+      "uploadedBuildRef": "private:app-store-connect/yurumeet/build/0.1.0",
+      "listingReviewed": false,
+      "privacyNutritionReviewed": false,
+      "screenshots": [
+        {
+          "locale": "ja-JP",
+          "device": "iphone-6.7",
+          "evidenceRef": "private:mobile/yurumeet/store/app-store/ja-JP/iphone-6.7/home.png",
+          "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ]
+    },
+    "googlePlay": {
+      "packageName": "com.yurumeet",
+      "uploadedArtifactRef": "private:google-play/yurumeet/internal/yurumeet-release.aab",
+      "listingReviewed": false,
+      "dataSafetyReviewed": false,
+      "screenshots": [
+        {
+          "locale": "ja-JP",
+          "device": "phone",
+          "evidenceRef": "private:mobile/yurumeet/store/google-play/ja-JP/phone/home.png",
+          "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ]
+    }
+  },
+  "deviceSmoke": [
+    {
+      "platform": "ios",
+      "device": "iPhone 15",
+      "osVersion": "17.5",
+      "result": "not-run",
+      "capturedAt": "2026-07-01T00:00:00.000Z",
+      "evidenceRef": "private:mobile/yurumeet/device-smoke/ios/iphone-15"
+    },
+    {
+      "platform": "android",
+      "device": "Pixel 8",
+      "osVersion": "14",
+      "result": "not-run",
+      "capturedAt": "2026-07-01T00:00:00.000Z",
+      "evidenceRef": "private:mobile/yurumeet/device-smoke/android/pixel-8"
+    }
+  ]
+}

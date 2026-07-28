@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   beginMobileOidcSignIn,
   completeMobileOidcSignIn,
+  createMobileClientController,
   loadMobileSession,
   mobileAuthRequestStorageKey,
   signInWithMobilePassword,
@@ -70,6 +71,9 @@ test("Yurumeet completes OIDC PKCE and exchanges the ID token for a family host 
   expect(new URL(started.authorizationUrl).searchParams.get("client_id")).toBe(
     "yurumeet-mobile",
   );
+  expect(new URL(started.authorizationUrl).searchParams.get("scope")).toBe(
+    "openid profile offline_access",
+  );
   expect(new URL(started.authorizationUrl).searchParams.get("redirect_uri")).toBe(
     "yurume://oauth/callback",
   );
@@ -85,6 +89,40 @@ test("Yurumeet completes OIDC PKCE and exchanges the ID token for a family host 
   expect(session.product).toBe("yurume");
   expect(session.accessToken).toBe("oidc-host-session");
   expect(session.productEndpoints?.mobileLogout).toBe("/api/auth/logout");
+});
+
+test("Yurumeet treats a setup ticket as an unverified hint", async () => {
+  const controller = createMobileClientController({
+    adapter: productAdapter,
+    nativeBridge: memoryBridge(),
+    fetch: familyDiscoveryFetch(["client.yurume.messages.v1"]),
+  });
+
+  await controller.connectWithInput(
+    "yurume://connect?host_url=https%3A%2F%2Ftalk.example&product=yurume&setup_ticket=opaque-1",
+  );
+
+  expect(controller.getState().discovery?.hostUrl).toBe(
+    "https://talk.example",
+  );
+  expect(controller.getState().status).toBe(
+    "Yurucommu family サーバーが見つかりました。 Unverified setup reference received.",
+  );
+});
+
+test("Yurumeet refuses a family host without its native talk capability", async () => {
+  const controller = createMobileClientController({
+    adapter: productAdapter,
+    nativeBridge: memoryBridge(),
+    fetch: familyDiscoveryFetch([]),
+  });
+
+  await controller.connectWithInput("https://talk.example");
+
+  expect(controller.getState().discovery).toBeUndefined();
+  expect(controller.getState().status).toContain(
+    "client.yurume.messages.v1",
+  );
 });
 
 function oidcHostFetch(): FetchLike {
@@ -118,6 +156,24 @@ function oidcHostFetch(): FetchLike {
       });
     }
     throw new Error(`Unexpected Yurumeet auth request: ${url}`);
+  };
+}
+
+function familyDiscoveryFetch(capabilities: readonly string[]): FetchLike {
+  return async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/.well-known/yurucommu") {
+      return Response.json({
+        product: "yurucommu",
+        auth: { oidc: false, password: true },
+        capabilities,
+        endpoints: {
+          mobilePasswordLogin: "/api/auth/mobile/login",
+          mobileLogout: "/api/auth/logout",
+        },
+      });
+    }
+    return new Response("", { status: 404 });
   };
 }
 

@@ -6,7 +6,8 @@
 
 - Scope: Independent Tauri mobile shell for the Yurumeet product.
 - Repository kind: `client`
-- Direct sibling dependencies: `mobile-kit`, `takosumi`, `yurucommu-core`
+- Direct sibling dependencies: `mobile-kit`, `yurucommu-core`
+- Published contracts consumed: `https://app.takosumi.com` (takosumi, http-service)
 - Repository gate: `bun run check`
 - Canonical docs: [README.md](README.md), [README.en.md](README.en.md)
 

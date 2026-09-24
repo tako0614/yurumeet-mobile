@@ -38,7 +38,7 @@ desktop 向けの `bun run tauri:dev` / `bun run tauri:build` は exit 64 で停
 
 [`release/mobile-release-evidence.example.json`](release/mobile-release-evidence.example.json) は全項目が
 `not-run` の入力例です。実測した private evidence から `release/mobile-release-evidence.json` を作るまで release gate は
-fail closed のままです。artifact と evidence を独立 verifier が検証した後、exact evidence SHA-256、
+安全側に停止のままです。artifact と evidence を独立 verifier が検証した後、exact evidence SHA-256、
 `tauri.conf.json` 由来の product identity / version、private `verifierRef` を持つ
 `release/mobile-release-attestation.json` を生成します。実 evidence / attestation は両方とも gitignore 対象で、
 repo 内のテンプレートを verified evidence として扱いません。

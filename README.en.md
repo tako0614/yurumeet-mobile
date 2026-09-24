@@ -21,10 +21,8 @@ bun run bootstrap
 bun run mobile:check
 ```
 
-The checkout must have the Takosumi source beside this repository as
-`../takosumi`. `bootstrap` installs the locked shared source modules and this
-app's locked dependencies, including the explicit mobile-kit and contract
-packages.
+`bootstrap` runs `bun install --frozen-lockfile` to install this app's locked
+dependencies.
 The desktop `tauri:dev` and `tauri:build` commands intentionally exit 64. Use
 the `tauri:android:*` or `tauri:ios:*` commands for native execution and
 builds.

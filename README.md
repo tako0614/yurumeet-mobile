@@ -18,15 +18,12 @@ deep link / push から外部 route を開きません。
 
 ## 始め方
 
-この repo の隣に Takosumi の source checkout が `../takosumi` として必要です。
-
 ```sh
 bun run bootstrap
 bun run mobile:check
 ```
 
-`bootstrap` は共有 source module とこのアプリの locked 依存 (明示宣言した mobile-kit / contract package を含む)
-をインストールします。
+`bootstrap` は `bun install --frozen-lockfile` でこのアプリの locked 依存をインストールします。
 desktop 向けの `bun run tauri:dev` / `bun run tauri:build` は exit 64 で停止します。native 実行・build は
 `tauri:android:*` または `tauri:ios:*` を使います。
 

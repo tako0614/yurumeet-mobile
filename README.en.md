@@ -1,5 +1,7 @@
 # Yurumeet Mobile
 
+日本語: [README.md](README.md)
+
 Talk-first Tauri client for the shared Yurucommu family API. It owns the
 `yurume` client identity and a separate bundle/release lifecycle from
 Yurucommu Mobile. It is distributed for iOS and Android only; desktop

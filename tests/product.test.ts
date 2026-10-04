@@ -167,7 +167,7 @@ test("the release evidence template cannot be mistaken for completed evidence", 
 
 test("authenticated host shortcuts stay native until a browser handoff exists", async () => {
   const main = await Bun.file(
-    new URL("../src/main.tsx", import.meta.url),
+    new URL("../src/mobile-app.tsx", import.meta.url),
   ).text();
   expect(main).toContain("hostActions: []");
   expect(main).not.toContain("defineMobileHostActions");

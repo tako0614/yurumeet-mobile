@@ -1,6 +1,5 @@
-import { createSignal, For, Show } from "solid-js";
+import { createEffect, createSignal, For, onCleanup, Show } from "solid-js";
 import {
-  appendUniqueMobileItemsById,
   canSubmitMobileText,
   formatMobilePreviewDate,
   mobileTextRemaining,
@@ -16,83 +15,33 @@ import {
   MobilePreviewSection,
 } from "@takosjp/mobile-kit/solid";
 import {
-  loadCommunityMessages,
-  loadUserMessages,
-  markTalkAsRead,
-  sendCommunityMessage,
-  sendUserMessage,
-  type TalkContact,
-  type TalkMessage,
   type YurumeetMobileHome,
 } from "./api.ts";
+import { createTalkController, type TalkState } from "./talk-controller.ts";
 
 export function TalkScreen(props: {
   home?: YurumeetMobileHome;
   session: MobileSession;
   refreshHome: () => Promise<void>;
+  isActive?: () => boolean;
 }) {
-  const [selected, setSelected] = createSignal<TalkContact>();
-  const [messages, setMessages] = createSignal<readonly TalkMessage[]>([]);
-  const [content, setContent] = createSignal("");
-  const [loading, setLoading] = createSignal(false);
-  const [sending, setSending] = createSignal(false);
-  const [error, setError] = createSignal("");
-
-  async function open(contact: TalkContact) {
-    setSelected(contact);
-    setMessages([]);
-    setError("");
-    setLoading(true);
-    try {
-      setMessages(
-        contact.type === "community"
-          ? await loadCommunityMessages(props.session, contact.ap_id)
-          : await loadUserMessages(props.session, contact.ap_id),
-      );
-      await markTalkAsRead(props.session, contact);
-      await props.refreshHome();
-    } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "トークを読み込めませんでした。",
-      );
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function send() {
-    const contact = selected();
-    if (
-      !contact ||
-      !canSubmitMobileText({
-        value: content(),
-        disabled: sending(),
-        maxLength: 2000,
-      })
-    )
-      return;
-    setSending(true);
-    setError("");
-    try {
-      const message =
-        contact.type === "community"
-          ? await sendCommunityMessage(props.session, contact.ap_id, content())
-          : await sendUserMessage(props.session, contact.ap_id, content());
-      setMessages((current) => appendUniqueMobileItemsById(current, [message]));
-      setContent("");
-      await props.refreshHome();
-    } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "メッセージを送れませんでした。",
-      );
-    } finally {
-      setSending(false);
-    }
-  }
+  const [state, setState] = createSignal<TalkState>({
+    messages: [], content: "", loading: false, sending: false, error: "",
+  });
+  const controller = createTalkController({
+    session: props.session,
+    refreshHome: () => props.refreshHome(),
+    onChange: setState,
+    isActive: () => props.isActive?.() !== false,
+  });
+  createEffect(() => controller.updateSession(props.session));
+  onCleanup(() => controller.dispose());
+  const selected = () => state().selected;
+  const messages = () => state().messages;
+  const content = () => state().content;
+  const loading = () => state().loading;
+  const sending = () => state().sending;
+  const error = () => state().error;
 
   return (
     <div class="talk-surface">
@@ -104,7 +53,7 @@ export function TalkScreen(props: {
               <button
                 type="button"
                 class="text-button"
-                onClick={() => setSelected(undefined)}
+                onClick={() => controller.back()}
               >
                 戻る
               </button>
@@ -120,7 +69,7 @@ export function TalkScreen(props: {
                     type="button"
                     class="text-button"
                     disabled={sending()}
-                    onClick={() => void open(contact())}
+                    onClick={() => void controller.open(contact())}
                   >
                     トークを更新
                   </button>
@@ -157,14 +106,14 @@ export function TalkScreen(props: {
               <MobileComposeForm
                 onSubmit={(event) => {
                   event.preventDefault();
-                  void send();
+                  void controller.send();
                 }}
               >
                 <MobileComposeField label="本文">
                   <textarea
                     maxlength={2000}
                     value={content()}
-                    onInput={(event) => setContent(event.currentTarget.value)}
+                    onInput={(event) => controller.setDraft(event.currentTarget.value)}
                   />
                 </MobileComposeField>
                 <MobileComposeFooter
@@ -176,7 +125,7 @@ export function TalkScreen(props: {
                     disabled={
                       !canSubmitMobileText({
                         value: content(),
-                        disabled: sending(),
+                        disabled: sending() || loading(),
                         maxLength: 2000,
                       })
                     }
@@ -200,7 +149,7 @@ export function TalkScreen(props: {
                 <button
                   class="talk-row"
                   type="button"
-                  onClick={() => void open(contact)}
+                  onClick={() => void controller.open(contact)}
                 >
                   <Show
                     when={contact.icon_url}

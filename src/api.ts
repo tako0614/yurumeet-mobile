@@ -1,62 +1,100 @@
 import {
   createMobileApiClient,
+  MobileApiError,
+  WireDecodeError,
   normalizeNotificationPusherGatewayUrl,
   registerNotificationPusherWithHost,
   unregisterNotificationPusherWithHost,
   type MobilePushRegistrationCallbackInput,
   type MobileSession,
+  type WireDecoder,
 } from "@takosjp/mobile-kit";
+import {
+  CONTACTS_RESPONSE,
+  CURRENT_ACTOR_RESPONSE,
+  MESSAGES_RESPONSE,
+  READ_RESPONSE,
+  SENT_MESSAGE_RESPONSE,
+  type TalkActor,
+  type TalkContact,
+  type TalkMessage,
+} from "./talk-response.ts";
 
-export interface TalkContact {
-  type: "user" | "community";
-  ap_id: string;
-  preferred_username: string;
-  name: string | null;
-  icon_url: string | null;
-  last_message: { content: string; is_mine: boolean } | null;
-  last_message_at: string | null;
-  unread_count?: number;
-}
+export type { TalkContact, TalkMessage } from "./talk-response.ts";
 
 export interface YurumeetMobileHome {
-  actor: { ap_id: string; preferred_username: string; name: string | null };
+  actor: TalkActor;
   contacts: TalkContact[];
   requestCount: number;
   unread: number;
 }
 
-export interface TalkMessage {
-  id: string;
-  content: string;
-  created_at: string;
-  sender: { ap_id: string; name: string | null; preferred_username: string };
+export class YurumeetResponseError extends Error {
+  readonly path: string;
+  readonly uncertainSend: boolean;
+
+  constructor(path: string, cause: unknown, uncertainSend: boolean) {
+    super(
+      uncertainSend
+        ? "送信結果を確認できませんでした。再送する前にトークを開き直して、届いているか確認してください。"
+        : "サーバーの応答を確認できませんでした。更新してもう一度確認してください。",
+      { cause },
+    );
+    this.name = "YurumeetResponseError";
+    this.path = path;
+    this.uncertainSend = uncertainSend;
+  }
+}
+
+async function response<T>(
+  session: MobileSession,
+  path: string,
+  decoder: WireDecoder<T>,
+  init?: RequestInit,
+  uncertainSend = false,
+): Promise<T> {
+  try {
+    return await createMobileApiClient({ session }).wire(path, decoder, init);
+  } catch (cause) {
+    // A successful HTTP response can follow a committed send even when its
+    // JSON is malformed. Keep the draft and surface uncertainty; never resend.
+    if (
+      cause instanceof WireDecodeError ||
+      cause instanceof SyntaxError ||
+      (uncertainSend && !(cause instanceof MobileApiError))
+    ) {
+      throw new YurumeetResponseError(path, cause, uncertainSend);
+    }
+    throw cause;
+  }
 }
 
 export async function loadHome(
   session: MobileSession,
 ): Promise<YurumeetMobileHome> {
-  const api = createMobileApiClient({ session });
   const [me, contacts] = await Promise.all([
-    api.json<{ actor: YurumeetMobileHome["actor"] }>(
+    response(
+      session,
       session.productEndpoints?.currentUser ?? "/api/auth/me",
+      CURRENT_ACTOR_RESPONSE,
     ),
-    api.json<{
-      mutual_followers?: TalkContact[];
-      communities?: TalkContact[];
-      request_count?: number;
-    }>(session.productEndpoints?.conversations ?? "/api/dm/contacts"),
+    response(
+      session,
+      session.productEndpoints?.conversations ?? "/api/dm/contacts",
+      CONTACTS_RESPONSE,
+    ),
   ]);
   const all = [
-    ...(contacts.mutual_followers ?? []),
-    ...(contacts.communities ?? []),
+    ...contacts.mutual_followers,
+    ...contacts.communities,
   ].sort((a, b) =>
     (b.last_message_at ?? "").localeCompare(a.last_message_at ?? ""),
   );
   return {
     actor: me.actor,
     contacts: all,
-    requestCount: contacts.request_count ?? 0,
-    unread: all.reduce((sum, item) => sum + (item.unread_count ?? 0), 0),
+    requestCount: contacts.request_count,
+    unread: all.reduce((sum, item) => sum + item.unread_count, 0),
   };
 }
 
@@ -64,10 +102,11 @@ export async function loadUserMessages(
   session: MobileSession,
   actorApId: string,
 ): Promise<TalkMessage[]> {
-  const data = await createMobileApiClient({ session }).json<{
-    messages?: TalkMessage[];
-  }>(`/api/dm/user/${encodeURIComponent(actorApId)}/messages?limit=50`);
-  return data.messages ?? [];
+  return response(
+    session,
+    `/api/dm/user/${encodeURIComponent(actorApId)}/messages?limit=50`,
+    MESSAGES_RESPONSE,
+  );
 }
 
 export async function sendUserMessage(
@@ -75,24 +114,28 @@ export async function sendUserMessage(
   actorApId: string,
   content: string,
 ): Promise<TalkMessage> {
-  const data = await createMobileApiClient({ session }).json<{
-    message: TalkMessage;
-  }>(`/api/dm/user/${encodeURIComponent(actorApId)}/messages`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ content }),
-  });
-  return data.message;
+  return response(
+    session,
+    `/api/dm/user/${encodeURIComponent(actorApId)}/messages`,
+    SENT_MESSAGE_RESPONSE,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content }),
+    },
+    true,
+  );
 }
 
 export async function loadCommunityMessages(
   session: MobileSession,
   communityApId: string,
 ): Promise<TalkMessage[]> {
-  const data = await createMobileApiClient({ session }).json<{
-    messages?: TalkMessage[];
-  }>(`/api/communities/${encodeURIComponent(communityApId)}/messages?limit=50`);
-  return data.messages ?? [];
+  return response(
+    session,
+    `/api/communities/${encodeURIComponent(communityApId)}/messages?limit=50`,
+    MESSAGES_RESPONSE,
+  );
 }
 
 export async function sendCommunityMessage(
@@ -100,14 +143,17 @@ export async function sendCommunityMessage(
   communityApId: string,
   content: string,
 ): Promise<TalkMessage> {
-  const data = await createMobileApiClient({ session }).json<{
-    message: TalkMessage;
-  }>(`/api/communities/${encodeURIComponent(communityApId)}/messages`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ content }),
-  });
-  return data.message;
+  return response(
+    session,
+    `/api/communities/${encodeURIComponent(communityApId)}/messages`,
+    SENT_MESSAGE_RESPONSE,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content }),
+    },
+    true,
+  );
 }
 
 export async function markTalkAsRead(
@@ -115,8 +161,10 @@ export async function markTalkAsRead(
   contact: Pick<TalkContact, "type" | "ap_id">,
 ): Promise<void> {
   const kind = contact.type === "community" ? "community" : "user";
-  await createMobileApiClient({ session }).json(
+  return response(
+    session,
     `/api/dm/${kind}/${encodeURIComponent(contact.ap_id)}/read`,
+    READ_RESPONSE,
     { method: "POST" },
   );
 }

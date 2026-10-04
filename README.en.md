@@ -18,6 +18,11 @@ deployment completion. Authenticated web shortcuts remain hidden until the
 host defines a one-time browser-session handoff; deep links and push events do
 not open authenticated routes in an external browser either.
 
+Talk responses are validated before display. An invalid response shows an error instead of an empty conversation;
+use the talk refresh action to read it again. When a send result cannot be confirmed, the draft stays intact and
+is never sent again automatically. Refresh the conversation before resending. Attachment-only messages show an
+attachment count.
+
 ```sh
 bun run bootstrap
 bun run mobile:check

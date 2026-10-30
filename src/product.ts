@@ -23,6 +23,9 @@ export const productAdapter: MobileProductAdapter = {
   // `yurumeet/src/styles.css`.
   accentColor: "#ff3b3b",
   mobileScheme: "yurume",
+  // A link for another saved server shows it and waits for the user to
+  // switch; it never changes the account in use by itself.
+  confirmRouteAccountSwitch: true,
   // The family host exchanges the OIDC result for its own session. This
   // client neither receives nor stores a provider refresh token.
   oidcScopes: ["openid", "profile", "email"],

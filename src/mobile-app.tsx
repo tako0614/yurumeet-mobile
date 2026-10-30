@@ -12,8 +12,9 @@ import {
   type YurumeetMobileHome,
 } from "./api.ts";
 import { productAdapter } from "./product.ts";
-import { TalkScreen } from "./talk-screen.tsx";
+import { HostRouteNoticeBanner, TalkScreen } from "./talk-screen.tsx";
 import { createTalkHomeLoader } from "./talk-home-loader.ts";
+import { createHostRouteHandoff, type HostRouteNotice } from "./host-route.ts";
 
 const metrics = [
   { label: "トーク", value: (home) => home?.contacts.length },
@@ -25,6 +26,10 @@ export function createYurumeetMobileApp(
   createNativeBridge: () => NativeBridge,
 ): MobileClientAppProps<YurumeetMobileHome> {
   const loader = createTalkHomeLoader({ loadHome });
+  // Route links (`yurume://open?path=…` / `?url=…`) open on the talk screen; a
+  // route without a native screen is reported here instead of a browser.
+  const [routeNotice, setRouteNotice] = createSignal<HostRouteNotice>();
+  const openHostRoute = createHostRouteHandoff(setRouteNotice);
   let view: {
     active: boolean;
     revision: number;
@@ -44,12 +49,19 @@ export function createYurumeetMobileApp(
     }));
     onCleanup(release);
     return (
-      <TalkScreen
-        home={home()}
-        session={session()}
-        refreshHome={context.refreshHome}
-        isActive={context.isActive}
-      />
+      <>
+        <HostRouteNoticeBanner
+          notice={routeNotice()}
+          session={session()}
+          onDismiss={() => setRouteNotice(undefined)}
+        />
+        <TalkScreen
+          home={home()}
+          session={session()}
+          refreshHome={context.refreshHome}
+          isActive={context.isActive}
+        />
+      </>
     );
   }
 
@@ -98,6 +110,10 @@ export function createYurumeetMobileApp(
     loadHome: loader.load,
     registerPush,
     unregisterPush,
+    openHostRoute,
+    // A tapped notification opens the talk screen, as before. It does not go
+    // through the host route handoff.
+    handlePushNotification: (input) => input.kind === "tapped",
     sessionUnlock: {
       restoreMode: "if-available",
       prompt: {
@@ -134,7 +150,8 @@ export function createYurumeetMobileApp(
     metrics,
     // Talk and contacts are native below. Do not open authenticated web routes
     // in an external browser: the host session is scoped to this native client
-    // and there is no one-time browser-session handoff contract yet.
+    // and there is no one-time browser-session handoff contract yet. Route
+    // links go through `openHostRoute`, which only opens native screens.
     hostActions: [],
     renderHomeExtra: renderTalk,
   };

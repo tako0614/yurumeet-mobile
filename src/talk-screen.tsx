@@ -18,6 +18,33 @@ import {
   type YurumeetMobileHome,
 } from "./api.ts";
 import { createTalkController, type TalkState } from "./talk-controller.ts";
+import {
+  displayHostRoutePath,
+  hostRouteNoticeFor,
+  type HostRouteNotice,
+} from "./host-route.ts";
+
+/** Shown when a link asked for a host screen that this app does not have. */
+export function HostRouteNoticeBanner(props: {
+  notice?: HostRouteNotice;
+  session: MobileSession;
+  onDismiss: () => void;
+}) {
+  return (
+    <Show when={hostRouteNoticeFor(props.notice, props.session)}>
+      {(notice) => (
+        <div class="route-notice" role="status">
+          <p>
+            リンク先の画面（{displayHostRoutePath(notice().path)}）はアプリにありません。トークを表示しています。
+          </p>
+          <button type="button" class="text-button" onClick={() => props.onDismiss()}>
+            閉じる
+          </button>
+        </div>
+      )}
+    </Show>
+  );
+}
 
 export function TalkScreen(props: {
   home?: YurumeetMobileHome;

@@ -171,7 +171,12 @@ test("authenticated host shortcuts stay native until a browser handoff exists", 
   ).text();
   expect(main).toContain("hostActions: []");
   expect(main).not.toContain("defineMobileHostActions");
-  expect(main).not.toContain("openHostRoute:");
+  // Route links are handed to a native-only handoff (tests/launch-links.test.ts).
+  const handoff = await Bun.file(
+    new URL("../src/host-route.ts", import.meta.url),
+  ).text();
+  expect(handoff).not.toContain("openExternalUrl");
+  expect(main).not.toContain("openExternalUrl");
 });
 
 test("desktop launch and packaging fail closed", async () => {

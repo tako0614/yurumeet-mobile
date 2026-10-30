@@ -44,6 +44,36 @@ desktop 向けの `bun run tauri:dev` / `bun run tauri:build` は exit 64 で停
 `release/mobile-release-attestation.json` を生成します。実 evidence / attestation は両方とも gitignore 対象で、
 repo 内のテンプレートを verified evidence として扱いません。
 
+## リンク（Takosumi から開く・画面へのリンク）
+
+Takosumi は、このアプリを専用アプリとして開くとき、信頼できる専用アプリの一覧（`com.yurumeet`、scheme `yurume`、
+カタログの product `yurumeet`）にある雛形に画面のURLのoriginを URL encode して入れ、次のどちらかを送ります。
+
+- `yurume://connect?host_url=<origin>`
+- `yurume://connect?host_url=<origin>&product=yurumeet`
+
+アプリはどちらも受け付けます（自動ではサインインしません）。
+
+- サインインしていなければ、そのサーバーを見つけてサインインの手前まで進みます。
+- 別のサーバーにサインイン中なら、今のセッションはそのまま使えるようにしたまま、そのサーバーを「別の接続先」として
+  出し、保存したアカウントへの切り替えか、サインインして追加するかを利用者が選びます。黙って切り替えません。
+- 同じサーバーにサインイン中なら、何も尋ねずにアプリを開くだけです。
+
+画面へのリンク `yurume://open?path=/…`（`host_url=` 付きも可）と `yurume://open?url=https://<サーバー>/…` は、
+接続中のサーバーと同じoriginの絶対pathだけを受け付けます。別のoriginへ解決されるもの（`//host`、`/\host`、別の
+scheme）、空白・制御文字、2,048文字を超えるもの、`code`・`token`・`access_token`・`session` などの認証情報の名前の
+query・fragmentを持つものは開く前に拒否します。
+
+- `/`（web の `/?tab=talk` を含む。Takosumi の画面のURLはこれ）は、トークの画面で開きます。
+- それ以外の画面はアプリに無いため、トークの画面のままで「リンク先の画面はアプリにありません」と知らせます。
+  上のとおり、外部ブラウザでは開きません。
+- 別の保存済みサーバーへのリンクは、そのサーバーを出して利用者の切り替えを待ち、切り替えた後に開きます。
+  サインインしていなければ、サインインの後に開きます。
+- 通知をタップしたときは、これまでどおりトークの画面を開きます。
+
+ストアのIDが決まるまで、Takosumi 側の画面の Interface には `clients` を書きません。universal link・App Links
+（配布者のドメイン）も未設定です。
+
 ## 通知
 
 ビルド時に `VITE_YURUMEET_NOTIFICATION_PUSHER_GATEWAY_URL` には公開の pusher gateway URL だけを設定します。

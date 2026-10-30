@@ -130,3 +130,16 @@ body {
 .message-bubble small {
   color: var(--shell-muted);
 }
+.route-notice {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 14px;
+  border: 1px solid var(--shell-border);
+  border-radius: 14px;
+  padding: 10px 14px;
+  background: var(--shell-soft);
+  color: var(--shell-label);
+  font-size: 0.86rem;
+}

@@ -39,6 +39,39 @@ builds.
 `VITE_YURUMEET_NOTIFICATION_PUSHER_GATEWAY_URL` only to the public pusher
 gateway URL; APNs/FCM credentials stay gateway-owned.
 
+### Links (opening from Takosumi, screen links)
+
+When Takosumi opens this app as a screen's native client, it fills the trusted
+template for this app (`com.yurumeet`, scheme `yurume`, catalog product
+`yurumeet`) with the screen URL's origin, URL-encoded, and sends one of:
+
+- `yurume://connect?host_url=<origin>`
+- `yurume://connect?host_url=<origin>&product=yurumeet`
+
+Both are accepted (sign-in is never automatic). Signed out, the app finds the
+server and stops before sign-in. Signed in to another server, the current
+session stays usable and the server is shown as another host; the user chooses
+to switch to a saved account or sign in to add it. Nothing switches silently.
+Signed in to the same server, the app just opens.
+
+Screen links `yurume://open?path=/…` (optionally with `host_url=`) and
+`yurume://open?url=https://<server>/…` accept only absolute paths on the
+connected server's origin. Paths that resolve to another origin (`//host`,
+`/\host`, other schemes), whitespace or control characters, more than 2,048
+characters, or credential-named query or fragment parameters (`code`, `token`,
+`access_token`, `session`, …) are refused before anything opens.
+
+- `/` (including the web client's `/?tab=talk`; a Takosumi screen URL is this)
+  opens the talk screen.
+- Other screens are not in the app: the talk screen stays and says so. As
+  above, they are not opened in an external browser.
+- A link for another saved server shows that server and waits for the user to
+  switch; the route opens after the switch, or after sign-in when signed out.
+- Tapping a notification opens the talk screen, as before.
+
+Until store IDs exist, Takosumi screen interfaces do not declare `clients`.
+Universal links / App Links on a publisher domain are not set up.
+
 `release/mobile-release-evidence.example.json` is a tracked, all-`not-run`
 template. The release gate remains fail closed until an operator supplies
 measured private evidence as `release/mobile-release-evidence.json`. After an

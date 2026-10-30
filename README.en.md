@@ -64,6 +64,10 @@ fragment or path parameters have credential-looking names (`code`, `token`,
 basis: the check uses a name list and endings, so a credential under another
 name still passes. Links with a `code` parameter (such as `/join?code=…`) do
 not open either (mobile-kit's `allowRouteCodeParameter` is not enabled).
+Parameter names in the query, fragment or path must be ASCII: full-width
+letters are folded to ASCII first, and a link with any other non-ASCII name
+(such as `?名前=…`) does not open, so lookalike letters cannot spell a
+credential name. Non-ASCII values and anchors are fine.
 
 - `/` (including the web client's `/?tab=talk`; a Takosumi screen URL is this)
   opens the talk screen.

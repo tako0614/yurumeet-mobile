@@ -14,7 +14,7 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  MOBILE_KIT_SOURCE_REF: 98e772e5262699f480229d06088329287513706e
+  MOBILE_KIT_SOURCE_REF: 594e2439744dbde055b7c1a8703c206e7efefcab
   # Must exist on tako0614/takosumi. A workstation-local commit here fails every
   # PR at checkout with "upload-pack: not our ref".
   TAKOSUMI_SOURCE_REF: 2045296016a91b6ba2ca5066fdfb622c8d8fd1e3

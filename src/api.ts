@@ -13,11 +13,13 @@ import {
   CONTACTS_RESPONSE,
   CURRENT_ACTOR_RESPONSE,
   MESSAGES_RESPONSE,
+  MESSAGES_PAGE_RESPONSE,
   READ_RESPONSE,
   SENT_MESSAGE_RESPONSE,
   type TalkActor,
   type TalkContact,
   type TalkMessage,
+  type TalkMessagePage,
 } from "./talk-response.ts";
 
 export type { TalkContact, TalkMessage } from "./talk-response.ts";
@@ -138,6 +140,23 @@ export async function loadUserMessages(
     MESSAGES_RESPONSE,
     { signal },
   );
+}
+
+export async function loadTalkMessagePage(
+  session: MobileSession,
+  contact: Pick<TalkContact, "type" | "ap_id">,
+  signal?: AbortSignal,
+  before?: string,
+): Promise<TalkMessagePage> {
+  const query = new URLSearchParams({ limit: "50" });
+  if (before !== undefined) {
+    if (!before.trim()) throw new Error("以前のメッセージの位置を確認できませんでした。");
+    query.set("before", before);
+  }
+  const path = contact.type === "community"
+    ? `/api/communities/${encodeURIComponent(contact.ap_id)}/messages`
+    : `/api/dm/user/${encodeURIComponent(contact.ap_id)}/messages`;
+  return response(session, `${path}?${query}`, MESSAGES_PAGE_RESPONSE, { signal });
 }
 
 export async function sendUserMessage(

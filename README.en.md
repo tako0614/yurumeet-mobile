@@ -29,6 +29,12 @@ API requests have a 15-second budget including the response body. Leaving a conv
 retaining its pending send and draft. Sign-out or a change of credentials or API destination retires prior reads,
 sends and cached conversation data, so late responses cannot appear in the next account.
 
+DMs and group conversations open with the latest 50 messages. Use the older-message action to prepend history;
+the timestamp-plus-ID cursor retains messages that share a timestamp. Existing messages, confirmed sends and
+drafts stay intact. A failed page can be retried explicitly from the same position. Reading older history does
+not send messages, update read receipts or resolve an unknown send result. Reopening the conversation refreshes
+the latest page. Hosts that omit continuation metadata display an unknown history state instead of exhaustion.
+
 ```sh
 bun run bootstrap
 bun run mobile:check

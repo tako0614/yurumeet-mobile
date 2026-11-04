@@ -19,9 +19,15 @@ host defines a one-time browser-session handoff; deep links and push events do
 not open authenticated routes in an external browser either.
 
 Talk responses are validated before display. An invalid response shows an error instead of an empty conversation;
-use the talk refresh action to read it again. When a send result cannot be confirmed, the draft stays intact and
-is never sent again automatically. Refresh the conversation before resending. Attachment-only messages show an
-attachment count.
+use the talk refresh action to read it again. An unknown send result (a disconnected request, malformed successful
+response, or HTTP 408/5xx) retains the draft and blocks further sends until a successful conversation refresh.
+A failed refresh keeps sends blocked; a successful refresh never resends automatically. Edits made while reading
+or sending are preserved. This does not provide server-side deduplication: inspect the conversation before
+deciding to send again. Attachment-only messages show an attachment count.
+
+API requests have a 15-second budget including the response body. Leaving a conversation cancels its read while
+retaining its pending send and draft. Sign-out or a change of credentials or API destination retires prior reads,
+sends and cached conversation data, so late responses cannot appear in the next account.
 
 ```sh
 bun run bootstrap

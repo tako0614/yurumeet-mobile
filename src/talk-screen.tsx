@@ -1,6 +1,5 @@
 import { createEffect, createSignal, For, onCleanup, Show } from "solid-js";
 import {
-  canSubmitMobileText,
   formatMobilePreviewDate,
   mobileTextRemaining,
   type MobileSession,
@@ -53,7 +52,7 @@ export function TalkScreen(props: {
   isActive?: () => boolean;
 }) {
   const [state, setState] = createSignal<TalkState>({
-    messages: [], content: "", loading: false, sending: false, error: "",
+    messages: [], content: "", loading: false, sending: false, uncertain: false, canSend: false, error: "",
   });
   const controller = createTalkController({
     session: props.session,
@@ -130,6 +129,9 @@ export function TalkScreen(props: {
               </MobilePreviewList>
             </Show>
             <MobileComposeSection title="メッセージ">
+              <Show when={state().uncertain}>
+                <p role="status">送信結果が未確認です。トークを更新し、同じ内容が届いていないか確認してから操作してください。</p>
+              </Show>
               <MobileComposeForm
                 onSubmit={(event) => {
                   event.preventDefault();
@@ -150,11 +152,7 @@ export function TalkScreen(props: {
                     type="submit"
                     class="primary"
                     disabled={
-                      !canSubmitMobileText({
-                        value: content(),
-                        disabled: sending() || loading(),
-                        maxLength: 2000,
-                      })
+                      !state().canSend
                     }
                   >
                     {sending() ? "送信中" : "送信"}

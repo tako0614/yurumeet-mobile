@@ -10,6 +10,7 @@ import {
   markTalkAsRead,
   sendCommunityMessage,
   sendUserMessage,
+  isUncertainMessageSend,
   type TalkContact,
   type TalkMessage,
 } from "./api.ts";
@@ -20,6 +21,8 @@ export interface TalkState {
   readonly content: string;
   readonly loading: boolean;
   readonly sending: boolean;
+  readonly uncertain: boolean;
+  readonly canSend: boolean;
   readonly error: string;
 }
 
@@ -29,6 +32,8 @@ interface Conversation {
   content: string;
   draftRevision: number;
   sending: boolean;
+  uncertain: boolean;
+  sendAbort?: AbortController;
   readError: string;
   sendError: string;
   sendOutcome: number;
@@ -50,6 +55,7 @@ export function createTalkController(options: {
   let disposed = false;
   let selected: Conversation | undefined;
   let loading = false;
+  let readAbort: AbortController | undefined;
   const conversations = new Map<string, Conversation>();
 
   function state(): TalkState {
@@ -59,6 +65,10 @@ export function createTalkController(options: {
       content: selected?.content ?? "",
       loading,
       sending: selected?.sending ?? false,
+      uncertain: selected?.uncertain ?? false,
+      canSend: active(authority) && !!selected && !selected.uncertain && canSubmitMobileText({
+        value: selected.content, disabled: loading || selected.sending, maxLength: 2000,
+      }),
       error: selected?.sendError || selected?.readError || "",
     };
   }
@@ -80,7 +90,7 @@ export function createTalkController(options: {
     let entry = conversations.get(key);
     if (!entry) {
       entry = {
-        contact, messages: [], content: "", draftRevision: 0, sending: false,
+        contact, messages: [], content: "", draftRevision: 0, sending: false, uncertain: false,
         readError: "", sendError: "", sendOutcome: 0, confirmed: new Map(),
       };
       conversations.set(key, entry);
@@ -94,6 +104,9 @@ export function createTalkController(options: {
     const entry = conversation(contact);
     const expected = authority;
     const incarnation = ++view;
+    readAbort?.abort();
+    const read = new AbortController();
+    readAbort = read;
     const requestSession = session;
     const sendOutcome = entry.sendOutcome;
     selected = entry;
@@ -103,22 +116,26 @@ export function createTalkController(options: {
     publish();
     try {
       const messages = contact.type === "community"
-        ? await loadCommunityMessages(requestSession, contact.ap_id)
-        : await loadUserMessages(requestSession, contact.ap_id);
+        ? await loadCommunityMessages(requestSession, contact.ap_id, read.signal)
+        : await loadUserMessages(requestSession, contact.ap_id, read.signal);
       if (!current(expected, incarnation, entry)) return;
       for (const message of messages) entry.confirmed.delete(message.id);
       // A read started before a send ACK may omit that message. Merge only
       // ACKs received since this read began, preserving the producer page limit.
       entry.messages = appendUniqueMobileItemsById(messages, [...entry.confirmed.values()]);
-      if (entry.sendOutcome === sendOutcome) entry.sendError = "";
+      if (entry.sendOutcome === sendOutcome && !entry.sending) {
+        entry.sendError = "";
+        entry.uncertain = false;
+      }
       publish();
-      await markTalkAsRead(requestSession, contact);
+      await markTalkAsRead(requestSession, contact, read.signal);
       if (!current(expected, incarnation, entry)) return;
       await options.refreshHome();
     } catch (cause) {
       if (!current(expected, incarnation, entry)) return;
       entry.readError = errorMessage(cause, "トークを読み込めませんでした。");
     } finally {
+      if (readAbort === read) readAbort = undefined;
       if (current(expected, incarnation, entry)) {
         loading = false;
         publish();
@@ -129,6 +146,8 @@ export function createTalkController(options: {
   function back() {
     if (disposed) return;
     view += 1;
+    readAbort?.abort();
+    readAbort = undefined;
     selected = undefined;
     loading = false;
     publish();
@@ -143,7 +162,7 @@ export function createTalkController(options: {
 
   async function send() {
     const entry = selected;
-    if (!active(authority) || !entry || !canSubmitMobileText({
+    if (!active(authority) || !entry || entry.uncertain || !canSubmitMobileText({
       value: entry.content, disabled: loading || entry.sending, maxLength: 2000,
     })) return;
     const expected = authority;
@@ -151,14 +170,16 @@ export function createTalkController(options: {
     const contact = entry.contact;
     const content = entry.content;
     const revision = entry.draftRevision;
+    const abort = new AbortController();
+    entry.sendAbort = abort;
     entry.sending = true;
     entry.sendError = "";
     publish();
     let accepted = false;
     try {
       const message = contact.type === "community"
-        ? await sendCommunityMessage(requestSession, contact.ap_id, content)
-        : await sendUserMessage(requestSession, contact.ap_id, content);
+        ? await sendCommunityMessage(requestSession, contact.ap_id, content, abort.signal)
+        : await sendUserMessage(requestSession, contact.ap_id, content, abort.signal);
       if (!active(expected)) return;
       accepted = true;
       entry.confirmed.set(message.id, message);
@@ -172,8 +193,10 @@ export function createTalkController(options: {
     } catch (cause) {
       if (!active(expected)) return;
       entry.sendOutcome += 1;
+      entry.uncertain = isUncertainMessageSend(cause);
       entry.sendError = errorMessage(cause, "メッセージを送れませんでした。");
     } finally {
+      if (entry.sendAbort === abort) entry.sendAbort = undefined;
       if (active(expected)) {
         entry.sending = false;
         publish();
@@ -201,6 +224,9 @@ export function createTalkController(options: {
     sessionKey = key;
     authority += 1;
     view += 1;
+    readAbort?.abort();
+    readAbort = undefined;
+    for (const entry of conversations.values()) entry.sendAbort?.abort();
     conversations.clear();
     selected = undefined;
     loading = false;
@@ -211,6 +237,9 @@ export function createTalkController(options: {
     disposed = true;
     authority += 1;
     view += 1;
+    readAbort?.abort();
+    readAbort = undefined;
+    for (const entry of conversations.values()) entry.sendAbort?.abort();
     conversations.clear();
     selected = undefined;
     loading = false;

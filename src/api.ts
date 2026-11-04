@@ -46,6 +46,12 @@ export class YurumeetResponseError extends Error {
   }
 }
 
+/** Preserve genuine HTTP status/detail while classifying an ambiguous send. */
+export function isUncertainMessageSend(cause: unknown): boolean {
+  return (cause instanceof YurumeetResponseError && cause.uncertainSend) ||
+    (cause instanceof MobileApiError && (cause.status >= 500 || cause.status === 408));
+}
+
 async function response<T>(
   session: MobileSession,
   path: string,
@@ -53,19 +59,42 @@ async function response<T>(
   init?: RequestInit,
   uncertainSend = false,
 ): Promise<T> {
+  const selected = {
+    ...session,
+    productEndpoints: session.productEndpoints ? { ...session.productEndpoints } : undefined,
+  };
+  const owned = new AbortController();
+  const caller = init?.signal;
+  const cancel = () => owned.abort(caller?.reason);
+  caller?.addEventListener("abort", cancel, { once: true });
+  if (caller?.aborted) cancel();
+  const deadline = setTimeout(() => owned.abort(new Error(
+    "サーバーの応答を時間内に確認できませんでした。状態を確認してから操作してください。",
+  )), 15_000);
   try {
-    return await createMobileApiClient({ session }).wire(path, decoder, init);
+    if (owned.signal.aborted) throw owned.signal.reason;
+    const value = await createMobileApiClient({ session: selected }).wire(path, decoder, {
+      ...init, signal: owned.signal, credentials: "omit", redirect: "error", cache: "no-store",
+    });
+    if (owned.signal.aborted) throw owned.signal.reason;
+    return value;
   } catch (cause) {
+    const failure = owned.signal.aborted && !(cause instanceof MobileApiError)
+      ? owned.signal.reason ?? cause : cause;
     // A successful HTTP response can follow a committed send even when its
     // JSON is malformed. Keep the draft and surface uncertainty; never resend.
     if (
-      cause instanceof WireDecodeError ||
-      cause instanceof SyntaxError ||
-      (uncertainSend && !(cause instanceof MobileApiError))
+      failure instanceof WireDecodeError ||
+      failure instanceof SyntaxError ||
+      (uncertainSend && !(failure instanceof MobileApiError))
     ) {
-      throw new YurumeetResponseError(path, cause, uncertainSend);
+      throw new YurumeetResponseError(path, failure, uncertainSend);
     }
-    throw cause;
+    throw failure;
+  } finally {
+    clearTimeout(deadline);
+    caller?.removeEventListener("abort", cancel);
+    owned.abort();
   }
 }
 
@@ -101,11 +130,13 @@ export async function loadHome(
 export async function loadUserMessages(
   session: MobileSession,
   actorApId: string,
+  signal?: AbortSignal,
 ): Promise<TalkMessage[]> {
   return response(
     session,
     `/api/dm/user/${encodeURIComponent(actorApId)}/messages?limit=50`,
     MESSAGES_RESPONSE,
+    { signal },
   );
 }
 
@@ -113,6 +144,7 @@ export async function sendUserMessage(
   session: MobileSession,
   actorApId: string,
   content: string,
+  signal?: AbortSignal,
 ): Promise<TalkMessage> {
   return response(
     session,
@@ -122,6 +154,7 @@ export async function sendUserMessage(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ content }),
+      signal,
     },
     true,
   );
@@ -130,11 +163,13 @@ export async function sendUserMessage(
 export async function loadCommunityMessages(
   session: MobileSession,
   communityApId: string,
+  signal?: AbortSignal,
 ): Promise<TalkMessage[]> {
   return response(
     session,
     `/api/communities/${encodeURIComponent(communityApId)}/messages?limit=50`,
     MESSAGES_RESPONSE,
+    { signal },
   );
 }
 
@@ -142,6 +177,7 @@ export async function sendCommunityMessage(
   session: MobileSession,
   communityApId: string,
   content: string,
+  signal?: AbortSignal,
 ): Promise<TalkMessage> {
   return response(
     session,
@@ -151,6 +187,7 @@ export async function sendCommunityMessage(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ content }),
+      signal,
     },
     true,
   );
@@ -159,13 +196,14 @@ export async function sendCommunityMessage(
 export async function markTalkAsRead(
   session: MobileSession,
   contact: Pick<TalkContact, "type" | "ap_id">,
+  signal?: AbortSignal,
 ): Promise<void> {
   const kind = contact.type === "community" ? "community" : "user";
   return response(
     session,
     `/api/dm/${kind}/${encodeURIComponent(contact.ap_id)}/read`,
     READ_RESPONSE,
-    { method: "POST" },
+    { method: "POST", signal },
   );
 }
 

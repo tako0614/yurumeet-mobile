@@ -22,6 +22,13 @@ export interface TalkMessage {
   attachments?: Record<string, unknown>[];
 }
 
+export interface TalkMessagePage {
+  messages: TalkMessage[];
+  // Older hosts may omit continuation metadata; that is unknown, not exhausted.
+  hasMore: boolean | undefined;
+  nextCursor: string | null;
+}
+
 // The family producer owns these payloads. Validate the fields used by this
 // client; extra producer fields and nullable profile/media values remain valid.
 export const CURRENT_ACTOR_RESPONSE: WireDecoder<{ actor: TalkActor }> = {
@@ -57,6 +64,29 @@ export const MESSAGES_RESPONSE: WireDecoder<TalkMessage[]> = {
     return array(record(value, "response").messages, "messages").map(
       (value, index) => message(value, `messages[${index}]`),
     );
+  },
+};
+
+export const MESSAGES_PAGE_RESPONSE: WireDecoder<TalkMessagePage> = {
+  document: "Yurumeet message page",
+  decode(value) {
+    const messages = MESSAGES_RESPONSE.decode(value);
+    const hasMore = record(value, "response").has_more;
+    if (hasMore !== undefined && typeof hasMore !== "boolean") {
+      throw new Error("has_more must be a boolean");
+    }
+    let nextCursor: string | null = null;
+    if (hasMore) {
+      const first = messages[0];
+      if (!first?.created_at || /\s/.test(first.created_at) ||
+        !Number.isFinite(Date.parse(first.created_at)) || /\s/.test(first.id)) {
+        throw new Error("an older page requires a dated first message");
+      }
+      // Core orders oldest-first and accepts its published + AP-ID tuple.
+      // Keep the exact timestamp: normalizing it can skip equal-time rows.
+      nextCursor = `${first.created_at} ${first.id}`;
+    }
+    return { messages, hasMore, nextCursor };
   },
 };
 

@@ -1,12 +1,12 @@
 import { talkSessionIdentity } from "./talk-session.ts";
 import {
   appendUniqueMobileItemsById,
+  prependUniqueMobileItemsByKey,
   canSubmitMobileText,
   type MobileSession,
 } from "@takosjp/mobile-kit";
 import {
-  loadCommunityMessages,
-  loadUserMessages,
+  loadTalkMessagePage,
   markTalkAsRead,
   sendCommunityMessage,
   sendUserMessage,
@@ -20,6 +20,9 @@ export interface TalkState {
   readonly messages: readonly TalkMessage[];
   readonly content: string;
   readonly loading: boolean;
+  readonly loadingOlder: boolean;
+  readonly hasMore: boolean | undefined;
+  readonly historyError: string;
   readonly sending: boolean;
   readonly uncertain: boolean;
   readonly canSend: boolean;
@@ -38,6 +41,10 @@ interface Conversation {
   sendError: string;
   sendOutcome: number;
   confirmed: Map<string, TalkMessage>;
+  hasMore: boolean | undefined;
+  nextCursor: string | null;
+  cursors: Set<string>;
+  historyError: string;
 }
 
 // Conversations own their draft and pending send. A separate view incarnation
@@ -55,6 +62,7 @@ export function createTalkController(options: {
   let disposed = false;
   let selected: Conversation | undefined;
   let loading = false;
+  let loadingOlder = false;
   let readAbort: AbortController | undefined;
   const conversations = new Map<string, Conversation>();
 
@@ -64,6 +72,9 @@ export function createTalkController(options: {
       messages: selected?.messages ?? [],
       content: selected?.content ?? "",
       loading,
+      loadingOlder,
+      hasMore: selected?.hasMore,
+      historyError: selected?.historyError ?? "",
       sending: selected?.sending ?? false,
       uncertain: selected?.uncertain ?? false,
       canSend: active(authority) && !!selected && !selected.uncertain && canSubmitMobileText({
@@ -92,6 +103,7 @@ export function createTalkController(options: {
       entry = {
         contact, messages: [], content: "", draftRevision: 0, sending: false, uncertain: false,
         readError: "", sendError: "", sendOutcome: 0, confirmed: new Map(),
+        hasMore: undefined, nextCursor: null, cursors: new Set(), historyError: "",
       };
       conversations.set(key, entry);
     }
@@ -112,13 +124,17 @@ export function createTalkController(options: {
     selected = entry;
     entry.confirmed.clear();
     loading = true;
+    loadingOlder = false;
+    entry.historyError = "";
     entry.readError = "";
     publish();
     try {
-      const messages = contact.type === "community"
-        ? await loadCommunityMessages(requestSession, contact.ap_id, read.signal)
-        : await loadUserMessages(requestSession, contact.ap_id, read.signal);
+      const page = await loadTalkMessagePage(requestSession, contact, read.signal);
       if (!current(expected, incarnation, entry)) return;
+      const { messages } = page;
+      entry.hasMore = page.hasMore;
+      entry.nextCursor = page.nextCursor;
+      entry.cursors = new Set(page.nextCursor ? [page.nextCursor] : []);
       for (const message of messages) entry.confirmed.delete(message.id);
       // A read started before a send ACK may omit that message. Merge only
       // ACKs received since this read began, preserving the producer page limit.
@@ -143,6 +159,46 @@ export function createTalkController(options: {
     }
   }
 
+  async function loadOlder() {
+    const entry = selected;
+    if (!active(authority) || !entry || loading || loadingOlder ||
+      entry.hasMore !== true || !entry.nextCursor) return;
+    const expected = authority;
+    const incarnation = view;
+    const cursor = entry.nextCursor;
+    const requestSession = session;
+    const read = new AbortController();
+    readAbort?.abort();
+    readAbort = read;
+    loadingOlder = true;
+    entry.historyError = "";
+    publish();
+    try {
+      const page = await loadTalkMessagePage(requestSession, entry.contact, read.signal, cursor);
+      if (!current(expected, incarnation, entry)) return;
+      if (page.hasMore === undefined || (page.hasMore && (
+        !page.nextCursor || entry.cursors.has(page.nextCursor) ||
+        page.messages.every((message) => entry.messages.some((shown) => shown.id === message.id))
+      ))) throw new Error("以前のメッセージの続きを確認できませんでした。もう一度読み込んでください。");
+      entry.messages = prependUniqueMobileItemsByKey(page.messages, entry.messages, (message) => message.id);
+      entry.hasMore = page.hasMore;
+      entry.nextCursor = page.nextCursor;
+      if (page.nextCursor) entry.cursors.add(page.nextCursor);
+      // An older page is not a latest-state read or a read receipt. It must
+      // never clear an uncertain send or repeat any message/read mutation.
+    } catch (cause) {
+      if (current(expected, incarnation, entry)) {
+        entry.historyError = errorMessage(cause, "以前のメッセージを読み込めませんでした。");
+      }
+    } finally {
+      if (readAbort === read) readAbort = undefined;
+      if (current(expected, incarnation, entry)) {
+        loadingOlder = false;
+        publish();
+      }
+    }
+  }
+
   function back() {
     if (disposed) return;
     view += 1;
@@ -150,6 +206,7 @@ export function createTalkController(options: {
     readAbort = undefined;
     selected = undefined;
     loading = false;
+    loadingOlder = false;
     publish();
   }
 
@@ -230,6 +287,7 @@ export function createTalkController(options: {
     conversations.clear();
     selected = undefined;
     loading = false;
+    loadingOlder = false;
     publish();
   }
 
@@ -243,9 +301,10 @@ export function createTalkController(options: {
     conversations.clear();
     selected = undefined;
     loading = false;
+    loadingOlder = false;
   }
 
-  return { state, open, back, setDraft, send, updateSession, dispose };
+  return { state, open, loadOlder, back, setDraft, send, updateSession, dispose };
 }
 
 

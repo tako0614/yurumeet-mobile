@@ -52,7 +52,8 @@ export function TalkScreen(props: {
   isActive?: () => boolean;
 }) {
   const [state, setState] = createSignal<TalkState>({
-    messages: [], content: "", loading: false, sending: false, uncertain: false, canSend: false, error: "",
+    messages: [], content: "", loading: false, loadingOlder: false, hasMore: undefined, historyError: "",
+    sending: false, uncertain: false, canSend: false, error: "",
   });
   const controller = createTalkController({
     session: props.session,
@@ -68,9 +69,21 @@ export function TalkScreen(props: {
   const loading = () => state().loading;
   const sending = () => state().sending;
   const error = () => state().error;
+  let surface!: HTMLDivElement;
+
+  async function loadOlder() {
+    const contact = selected();
+    const anchor = surface.querySelector<HTMLLIElement>(".message-list li");
+    const top = anchor?.getBoundingClientRect().top;
+    const scroll = window.scrollY;
+    await controller.loadOlder();
+    if (anchor?.isConnected && top !== undefined && selected() === contact && window.scrollY === scroll) {
+      window.scrollBy(0, anchor.getBoundingClientRect().top - top);
+    }
+  }
 
   return (
-    <div class="talk-surface">
+    <div class="talk-surface" ref={surface}>
       <Show when={selected()}>
         {(contact) => (
           <MobilePreviewSection
@@ -100,6 +113,24 @@ export function TalkScreen(props: {
                     トークを更新
                   </button>
                 </div>
+              </Show>
+              <Show when={state().hasMore !== undefined}>
+                <button
+                  type="button"
+                  class="text-button"
+                  disabled={state().hasMore !== true || state().loadingOlder}
+                  aria-busy={state().loadingOlder}
+                  onClick={() => void loadOlder()}
+                >
+                  {state().loadingOlder ? "以前のメッセージを読み込み中…" : state().hasMore
+                    ? "以前のメッセージを読み込む" : "これより前のメッセージはありません"}
+                </button>
+              </Show>
+              <Show when={state().historyError}>
+                <p class="talk-error" role="alert">{state().historyError}</p>
+              </Show>
+              <Show when={state().hasMore === undefined && !error()}>
+                <p class="empty">以前のメッセージの有無を確認できません。</p>
               </Show>
               <MobilePreviewList class="message-list">
                 <For each={messages()}>

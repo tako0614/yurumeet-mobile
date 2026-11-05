@@ -29,6 +29,16 @@ API requests have a 15-second budget including the response body. Leaving a conv
 retaining its pending send and draft. Sign-out or a change of credentials or API destination retires prior reads,
 sends and cached conversation data, so late responses cannot appear in the next account.
 
+Own DM messages expose native edit and confirmed delete actions. A fresh author-only single-message read supplies
+the exact conditional revision; compose and edit drafts remain separate, including newer input during a save ACK.
+Unknown mutation results and conflicts require explicit single-message readback, never automatic resend. This works
+for older loaded messages outside the latest page; an unsupported host404 is not deletion proof. Switching actors or
+sessions retires prior work, while changing conversations preserves that conversation's draft and pending result.
+These actions require the host's owned-DM reader. Group mutations remain a separate incomplete permission contract.
+Read receipts pause during message actions and confirmation dialogs so hidden messages remain unread.
+The server co-commits local changes with explicit-recipient delivery intent, without follower fanout. Remote arrival
+and the existing inbound Note ordering gaps are not qualified by this source/local implementation.
+
 The native message-request inbox lists incoming requests for the signed-in account. Opening the peer's current
 conversation does not accept it; an explicit reply does. Normal visible-message read receipts still apply.
 Rejecting requires confirmation and removes incoming messages in the peer's current conversation without blocking

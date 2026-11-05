@@ -72,6 +72,36 @@ export interface TalkMessage {
   attachments?: Record<string, unknown>[];
 }
 
+export function isTalkMessageRevision(value: unknown): value is string {
+  return typeof value === "string" && /^dm-v1:[a-f0-9]{64}$/.test(value);
+}
+
+export function ownedTalkMessageResponse(id: string, actorApId: string): WireDecoder<{ message: TalkMessage; revision: string }> {
+  return { document: "Yurumeet owned DM", decode(value) {
+    const data = record(value, "response"), parsed = message(data.message, "message");
+    if (parsed.id !== id || parsed.sender.ap_id !== actorApId || !isTalkMessageRevision(data.revision)) {
+      throw new Error("Owned DM does not match the selected author and message");
+    }
+    return { message: parsed, revision: data.revision };
+  } };
+}
+
+export function ownedTalkEditResponse(id: string, content: string): WireDecoder<{ content: string; revision: string }> {
+  return { document: "Yurumeet owned DM edit", decode(value) {
+    const data = record(value, "response"), edited = record(data.message, "message");
+    if (data.success !== true || edited.id !== id || edited.content !== content.trim() ||
+      typeof edited.updated_at !== "string" || !Number.isFinite(Date.parse(edited.updated_at)) || !isTalkMessageRevision(data.revision)) {
+      throw new Error("Owned DM edit was not acknowledged");
+    }
+    return { content: edited.content as string, revision: data.revision };
+  } };
+}
+
+export const OWNED_TALK_DELETE_RESPONSE: WireDecoder<void> = {
+  document: "Yurumeet owned DM delete",
+  decode(value) { if (record(value, "response").success !== true) throw new Error("Owned DM deletion was not acknowledged"); },
+};
+
 export interface TalkMessagePage {
   messages: TalkMessage[];
   // Older hosts may omit continuation metadata; that is unknown, not exhausted.

@@ -1,3 +1,4 @@
+import { observedInitAck as initAck, observedMessageAck as ack } from "./talk-read-fixture.ts";
 import { afterEach, expect, test } from "bun:test";
 import type { MobileSession } from "@takosjp/mobile-kit";
 import {
@@ -49,20 +50,18 @@ function rows(from: number, to: number) {
 function page(from: number, to: number, has_more: boolean) {
   return Response.json({ messages: rows(from, to), has_more });
 }
-function ack() {
-  return Response.json({ success: true, last_read_at: timestamp });
-}
 function stub(
   handler: (url: URL, init?: RequestInit) => Response | Promise<Response>,
 ) {
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) =>
-    handler(
-      new URL(input instanceof Request ? input.url : String(input)),
-      init,
-    )) as unknown as typeof fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.pathname.endsWith("/read-observed/init")) return initAck();
+    return handler(url, init);
+  }) as unknown as typeof fetch;
 }
 function subject(refreshHome = async () => {}) {
-  const value = createTalkController({ session, refreshHome });
+  const value = createTalkController({
+    observedMessageIds: () => value.state().messages.map(message => message.id), session, refreshHome });
   subjects.push(value);
   return value;
 }
@@ -78,7 +77,7 @@ function expectedCursor(index: number) {
 }
 
 test("the actual conversation exposes a continuation for the producer's older-message page", async () => {
-  stub((url) => (url.pathname.endsWith("/read") ? ack() : page(11, 60, true)));
+  stub((url, init) => (url.pathname.endsWith("/read-observed") ? ack(init) : page(11, 60, true)));
   const value = subject();
   await value.open(contact);
   expect(value.state().hasMore).toBe(true);
@@ -88,10 +87,10 @@ test("the actual conversation exposes a continuation for the producer's older-me
 
 test("equal-timestamp history uses the exact composite cursor and prepends all older rows", async () => {
   const calls: URL[] = [];
-  stub((url) => {
+  stub((url, init) => {
     calls.push(url);
-    return url.pathname.endsWith("/read")
-      ? ack()
+    return url.pathname.endsWith("/read-observed")
+      ? ack(init)
       : url.searchParams.has("before")
         ? page(1, 10, false)
         : page(11, 60, true);
@@ -114,7 +113,7 @@ test("equal-timestamp history uses the exact composite cursor and prepends all o
       .filter((url) => url.searchParams.has("before"))[0]!
       .searchParams.get("before"),
   ).toBe(expectedCursor(11));
-  expect(calls.filter((url) => url.pathname.endsWith("/read"))).toHaveLength(1);
+  expect(calls.filter((url) => url.pathname.endsWith("/read-observed"))).toHaveLength(1);
   expect(refreshes).toBe(1);
   const count = calls.length;
   await value.loadOlder();
@@ -154,9 +153,9 @@ test("community page paths and query cursors encode AP IDs without changing sele
 
 test("legacy missing continuation metadata stays unknown without inventing exhaustion or extra reads", async () => {
   let reads = 0;
-  stub((url) =>
-    url.pathname.endsWith("/read")
-      ? ack()
+  stub((url, init) =>
+    url.pathname.endsWith("/read-observed")
+      ? ack(init)
       : (reads++, Response.json({ messages: [row(1)] })),
   );
   expect(await loadUserMessages(session, contact.ap_id)).toEqual([row(1)]);
@@ -202,9 +201,9 @@ test("held older page coalesces repeated clicks and preserves concurrent ACK and
     receipts = 0,
     refreshes = 0;
   stub((url, init) => {
-    if (url.pathname.endsWith("/read")) {
+    if (url.pathname.endsWith("/read-observed")) {
       receipts++;
-      return ack();
+      return ack(init);
     }
     if (init?.method === "POST")
       return Response.json({ message: row(61) }, { status: 201 });
@@ -240,8 +239,8 @@ test("held older page coalesces repeated clicks and preserves concurrent ACK and
 test("failed page preserves rows and cursor and offers a single explicit retry", async () => {
   let fail = true;
   const cursors: string[] = [];
-  stub((url) => {
-    if (url.pathname.endsWith("/read")) return ack();
+  stub((url, init) => {
+    if (url.pathname.endsWith("/read-observed")) return ack(init);
     if (!url.searchParams.has("before")) return page(11, 60, true);
     cursors.push(url.searchParams.get("before")!);
     if (fail) {
@@ -269,7 +268,7 @@ test("Back/A-B-A fences an old page even if its aborted transport still delivers
   let signal: AbortSignal | undefined;
   let first = true;
   stub((url, init) => {
-    if (url.pathname.endsWith("/read")) return ack();
+    if (url.pathname.endsWith("/read-observed")) return ack(init);
     if (url.searchParams.has("before")) {
       signal = init?.signal ?? undefined;
       return held.promise;
@@ -305,7 +304,7 @@ for (const changed of [
       const held = deferred<Response>();
       let signal: AbortSignal | undefined;
       stub((url, init) => {
-        if (url.pathname.endsWith("/read")) return ack();
+        if (url.pathname.endsWith("/read-observed")) return ack(init);
         if (url.searchParams.has("before")) {
           signal = init?.signal ?? undefined;
           return held.promise;
@@ -331,7 +330,7 @@ test("disposal aborts a held page and suppresses late publishes", async () => {
   let signal: AbortSignal | undefined,
     changes = 0;
   stub((url, init) => {
-    if (url.pathname.endsWith("/read")) return ack();
+    if (url.pathname.endsWith("/read-observed")) return ack(init);
     if (url.searchParams.has("before")) {
       signal = init?.signal ?? undefined;
       return held.promise;
@@ -339,6 +338,7 @@ test("disposal aborts a held page and suppresses late publishes", async () => {
     return page(11, 60, true);
   });
   const value = createTalkController({
+    observedMessageIds: () => value.state().messages.map(message => message.id),
     session,
     refreshHome: async () => {},
     onChange: () => {
@@ -360,7 +360,7 @@ test("an older read cannot unlock a send that becomes unknown while the read is 
   const held = deferred<Response>();
   let posts = 0;
   stub((url, init) => {
-    if (url.pathname.endsWith("/read")) return ack();
+    if (url.pathname.endsWith("/read-observed")) return ack(init);
     if (init?.method === "POST") {
       posts++;
       return Response.json({ error: "unknown send" }, { status: 503 });
@@ -394,8 +394,8 @@ for (const wire of [
       JSON.stringify(wire).slice(0, 100),
     async () => {
       const cursors: string[] = [];
-      stub((url) => {
-        if (url.pathname.endsWith("/read")) return ack();
+      stub((url, init) => {
+        if (url.pathname.endsWith("/read-observed")) return ack(init);
         if (url.searchParams.has("before")) {
           cursors.push(url.searchParams.get("before")!);
           return Response.json(wire);
@@ -415,8 +415,8 @@ for (const wire of [
   );
 
 test("overlap deduplicates by ID while retaining currently confirmed values", async () => {
-  stub((url) => {
-    if (url.pathname.endsWith("/read")) return ack();
+  stub((url, init) => {
+    if (url.pathname.endsWith("/read-observed")) return ack(init);
     return url.searchParams.has("before")
       ? Response.json({
           messages: [...rows(1, 10), { ...row(11), content: "Stale overlap" }],
@@ -436,7 +436,7 @@ test("an explicit latest refresh resets history continuation and cancels the sta
   let latest = 0,
     aborted = false;
   stub((url, init) => {
-    if (url.pathname.endsWith("/read")) return ack();
+    if (url.pathname.endsWith("/read-observed")) return ack(init);
     if (url.searchParams.has("before")) {
       init?.signal?.addEventListener("abort", () => {
         aborted = true;

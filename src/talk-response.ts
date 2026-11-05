@@ -106,6 +106,32 @@ export const READ_RESPONSE: WireDecoder<void> = {
   },
 };
 
+export const OBSERVED_READ_INIT_RESPONSE: WireDecoder<void> = {
+  document: "Yurumeet observed read initialization",
+  decode(value) {
+    const response = record(value, "response");
+    const contract = record(response.read_observed, "read_observed");
+    if (response.success !== true || contract.version !== 1 || contract.max_ids !== 50) {
+      throw new Error("Observed read v1 capability required");
+    }
+  },
+};
+
+export function observedReadResponse(expected: readonly string[]): WireDecoder<void> {
+  const ids = [...expected];
+  return {
+    document: "Yurumeet observed message acknowledgment",
+    decode(value) {
+      const response = record(value, "response");
+      const acknowledged = array(response.message_ids, "message_ids");
+      if (response.success !== true || acknowledged.length !== ids.length ||
+          acknowledged.some((id, index) => id !== ids[index])) {
+        throw new Error("Acknowledged message IDs do not match the request");
+      }
+    },
+  };
+}
+
 function actor(value: unknown, field: string): TalkActor {
   const item = record(value, field);
   const apId = identity(item.ap_id, `${field}.ap_id`);

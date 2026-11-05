@@ -1,4 +1,4 @@
-import { createEffect, createSignal, For, onCleanup, Show } from "solid-js";
+import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import {
   formatMobilePreviewDate,
   mobileTextRemaining,
@@ -52,24 +52,56 @@ export function TalkScreen(props: {
   isActive?: () => boolean;
 }) {
   const [state, setState] = createSignal<TalkState>({
-    messages: [], content: "", loading: false, loadingOlder: false, hasMore: undefined, historyError: "",
+    messages: [], content: "", loading: false, loadingOlder: false, refreshing: false, gaps: [], hasMore: undefined, historyError: "",
     sending: false, uncertain: false, canSend: false, error: "",
   });
+  let surface!: HTMLDivElement;
   const controller = createTalkController({
     session: props.session,
     refreshHome: () => props.refreshHome(),
-    onChange: setState,
+    onChange: next => {
+      const previous = state();
+      const opened = previous.loading && !next.loading && !!next.selected && !next.error;
+      const follow = previous.selected === next.selected && !next.loadingOlder &&
+        previous.messages.at(-1)?.id !== next.messages.at(-1)?.id &&
+        window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 64;
+      setState(next);
+      if (opened || follow) queueMicrotask(() => {
+        if (surface?.isConnected && state().selected === next.selected &&
+          props.isActive?.() !== false && document.visibilityState !== "hidden") {
+          window.scrollTo(0, document.documentElement.scrollHeight);
+        }
+      });
+    },
     isActive: () => props.isActive?.() !== false,
+    observedMessageIds: () => [...(surface?.querySelectorAll<HTMLLIElement>(".message-list li[data-message-id]") ?? [])]
+      .filter(row => { const bounds = row.getBoundingClientRect(); return bounds.bottom > 0 && bounds.top < window.innerHeight; })
+      .map(row => row.dataset.messageId!),
+    receive: {
+      isForeground: () => document.visibilityState !== "hidden",
+      canMarkRead: () => !!surface?.isConnected,
+    },
   });
   createEffect(() => controller.updateSession(props.session));
   onCleanup(() => controller.dispose());
+  onMount(() => {
+    const update = () => controller.foregroundChanged();
+    const readVisible = () => controller.readVisible();
+    document.addEventListener("visibilitychange", update);
+    window.addEventListener("online", update);
+    window.addEventListener("scroll", readVisible, { passive: true });
+    onCleanup(() => {
+      document.removeEventListener("visibilitychange", update);
+      window.removeEventListener("online", update);
+      window.removeEventListener("scroll", readVisible);
+    });
+  });
   const selected = () => state().selected;
   const messages = () => state().messages;
   const content = () => state().content;
   const loading = () => state().loading;
   const sending = () => state().sending;
   const error = () => state().error;
-  let surface!: HTMLDivElement;
 
   async function loadOlder() {
     const contact = selected();
@@ -82,6 +114,17 @@ export function TalkScreen(props: {
     }
   }
 
+  async function loadGap(beforeId: string) {
+    const contact = selected();
+    const anchor = [...surface.querySelectorAll<HTMLLIElement>(".message-list li")]
+      .find(element => element.dataset.messageId === beforeId);
+    const top = anchor?.getBoundingClientRect().top, scroll = window.scrollY;
+    await controller.loadGap(beforeId);
+    if (anchor?.isConnected && top !== undefined && selected() === contact && window.scrollY === scroll) {
+      window.scrollBy(0, anchor.getBoundingClientRect().top - top);
+    }
+  }
+
   return (
     <div class="talk-surface" ref={surface}>
       <Show when={selected()}>
@@ -89,6 +132,16 @@ export function TalkScreen(props: {
           <MobilePreviewSection
             title={contact().name ?? contact().preferred_username}
             actions={
+              <div>
+                <button
+                  type="button"
+                  class="text-button"
+                  disabled={loading() || state().refreshing || state().loadingOlder || sending()}
+                  aria-busy={state().refreshing}
+                  onClick={() => controller.foregroundChanged()}
+                >
+                  {state().refreshing ? "新着を確認中…" : "新着を確認"}
+                </button>
               <button
                 type="button"
                 class="text-button"
@@ -96,6 +149,7 @@ export function TalkScreen(props: {
               >
                 戻る
               </button>
+              </div>
             }
           >
             <Show when={!loading()} fallback={<p class="empty">読み込み中…</p>}>
@@ -136,12 +190,30 @@ export function TalkScreen(props: {
                 <For each={messages()}>
                   {(message) => (
                     <li
+                      data-message-id={message.id}
                       class={
                         message.sender.ap_id === props.home?.actor.ap_id
                           ? "mine"
                           : ""
                       }
                     >
+                      <Show when={state().gaps.find(gap => gap.beforeId === message.id)}>
+                        {(gap) => (
+                          <div class="talk-gap" role="status">
+                            <p>この間のメッセージは未確認です。</p>
+                            <Show when={gap().canLoad} fallback={<p>このサーバーでは続きを確認できません。トークを開き直してください。</p>}>
+                              <button
+                                type="button"
+                                class="text-button"
+                                disabled={state().loadingOlder || loading()}
+                                onClick={() => void loadGap(message.id)}
+                              >
+                                間のメッセージを取得
+                              </button>
+                            </Show>
+                          </div>
+                        )}
+                      </Show>
                       <MobilePreviewCard class="message-bubble">
                         <p>
                           {message.content || (message.attachments?.length

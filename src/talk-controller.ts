@@ -1,4 +1,5 @@
 import { talkSessionIdentity } from "./talk-session.ts";
+import type { TalkMessagePage } from "./talk-response.ts";
 import {
   appendUniqueMobileItemsById,
   prependUniqueMobileItemsByKey,
@@ -7,7 +8,8 @@ import {
 } from "@takosjp/mobile-kit";
 import {
   loadTalkMessagePage,
-  markTalkAsRead,
+  initializeObservedTalkRead,
+  acknowledgeObservedTalkMessages,
   sendCommunityMessage,
   sendUserMessage,
   isUncertainMessageSend,
@@ -21,6 +23,8 @@ export interface TalkState {
   readonly content: string;
   readonly loading: boolean;
   readonly loadingOlder: boolean;
+  readonly refreshing: boolean;
+  readonly gaps: readonly { beforeId: string; canLoad: boolean }[];
   readonly hasMore: boolean | undefined;
   readonly historyError: string;
   readonly sending: boolean;
@@ -45,6 +49,10 @@ interface Conversation {
   nextCursor: string | null;
   cursors: Set<string>;
   historyError: string;
+  gaps: Map<string, { cursor: string | null; seen: Set<string> }>;
+  pendingRead: boolean;
+  acknowledged: Set<string>;
+  homePending: boolean;
 }
 
 // Conversations own their draft and pending send. A separate view incarnation
@@ -54,6 +62,12 @@ export function createTalkController(options: {
   refreshHome: () => Promise<void>;
   onChange?: (state: TalkState) => void;
   isActive?: () => boolean;
+  observedMessageIds: () => readonly string[];
+  receive?: {
+    isForeground: () => boolean;
+    canMarkRead?: () => boolean;
+    schedule?: (work: () => void, delayMs: number) => () => void;
+  };
 }) {
   let session = { ...options.session };
   let sessionKey = talkSessionIdentity(session);
@@ -64,6 +78,9 @@ export function createTalkController(options: {
   let loading = false;
   let loadingOlder = false;
   let readAbort: AbortController | undefined;
+  let receiveAbort: AbortController | undefined;
+  let cancelReceive: (() => void) | undefined;
+  let receiveFailed = false;
   const conversations = new Map<string, Conversation>();
 
   function state(): TalkState {
@@ -73,6 +90,8 @@ export function createTalkController(options: {
       content: selected?.content ?? "",
       loading,
       loadingOlder,
+      refreshing: !!receiveAbort,
+      gaps: [...(selected?.gaps ?? [])].map(([beforeId, gap]) => ({ beforeId, canLoad: gap.cursor !== null })),
       hasMore: selected?.hasMore,
       historyError: selected?.historyError ?? "",
       sending: selected?.sending ?? false,
@@ -96,6 +115,135 @@ export function createTalkController(options: {
     return active(expected) && view === incarnation && selected === entry;
   }
 
+  function stopReceive() {
+    cancelReceive?.();
+    cancelReceive = undefined;
+    const pending = receiveAbort;
+    receiveAbort = undefined;
+    pending?.abort();
+  }
+
+  function canReceive() {
+    return !!options.receive && options.receive.isForeground() && active(authority) && !!selected;
+  }
+
+  function scheduleReceive() {
+    cancelReceive?.();
+    cancelReceive = undefined;
+    if (!canReceive() || receiveFailed || receiveAbort) return;
+    const schedule = options.receive!.schedule ?? ((work: () => void, delayMs: number) => {
+      const id = setTimeout(work, delayMs);
+      return () => clearTimeout(id);
+    });
+    cancelReceive = schedule(() => {
+      cancelReceive = undefined;
+      void refreshLatest();
+    }, 5_000);
+  }
+
+  async function refreshLatest(readPage = true) {
+    const entry = selected;
+    if (!canReceive() || !entry || receiveAbort) return;
+    if (!readPage && (receiveFailed || (!entry.homePending && (!entry.pendingRead || entry.gaps.size > 0)) ||
+      options.receive?.canMarkRead?.() === false)) return;
+    if (loading || loadingOlder || entry.sending) { scheduleReceive(); return; }
+    const expected = authority, incarnation = view, requestSession = session;
+    const read = new AbortController();
+    cancelReceive?.();
+    cancelReceive = undefined;
+    receiveAbort = read;
+    const owns = () => receiveAbort === read && !read.signal.aborted && canReceive() && current(expected, incarnation, entry);
+    publish();
+    try {
+      if (readPage) {
+        const page = await loadTalkMessagePage(requestSession, entry.contact, read.signal);
+        if (!owns()) return;
+        const shown = new Set(entry.messages.map(message => message.id));
+        const arrived = page.messages.some(message => !shown.has(message.id));
+        mergeLatest(entry, page);
+        entry.pendingRead ||= arrived;
+        entry.readError = "";
+        publish();
+      }
+      // Let the view follow the new tail before checking actual visibility.
+      await Promise.resolve();
+      if (!owns()) return;
+      if (entry.pendingRead && entry.gaps.size === 0 && options.receive?.canMarkRead?.() !== false) {
+        await acknowledgeVisible(entry, requestSession, read.signal, owns);
+        if (!owns()) return;
+      }
+      if (entry.homePending) {
+        await options.refreshHome();
+        if (owns()) entry.homePending = false;
+      }
+    } catch (cause) {
+      if (owns()) {
+        receiveFailed = true;
+        entry.readError = errorMessage(cause, "新着メッセージを確認できませんでした。");
+      }
+    } finally {
+      if (receiveAbort === read) {
+        receiveAbort = undefined;
+        publish();
+        scheduleReceive();
+      }
+    }
+  }
+
+  async function acknowledgeVisible(entry: Conversation, requestSession: MobileSession, signal: AbortSignal, owns: () => boolean) {
+    if (!owns() || options.receive?.isForeground() === false || options.receive?.canMarkRead?.() === false || entry.gaps.size > 0) return;
+    const available = new Set(entry.messages.map(message => message.id));
+    if (typeof options.observedMessageIds !== "function") throw new Error("表示済みメッセージを確認できませんでした。");
+    const visible = options.observedMessageIds();
+    const ids = [...new Set(visible)].filter(id => available.has(id) && !entry.acknowledged.has(id));
+    if (!ids.length) return;
+    await acknowledgeObservedTalkMessages(requestSession, entry.contact, ids, signal);
+    if (!owns()) return;
+    for (const id of ids) entry.acknowledged.add(id);
+    entry.pendingRead = entry.messages.some(message => !entry.acknowledged.has(message.id));
+    entry.homePending = true;
+  }
+
+  function foregroundChanged() {
+    stopReceive();
+    receiveFailed = false;
+    if (canReceive()) void refreshLatest();
+    else publish();
+  }
+
+  function setHistoryCursor(entry: Conversation, page: TalkMessagePage) {
+    entry.hasMore = page.hasMore;
+    entry.nextCursor = page.nextCursor;
+    entry.cursors = new Set(page.nextCursor ? [page.nextCursor] : []);
+  }
+
+  function mergeLatest(entry: Conversation, page: TalkMessagePage) {
+    const previous = entry.messages;
+    const positions = new Map(previous.map((message, index) => [message.id, index]));
+    const firstKnown = page.messages.find(message => positions.has(message.id));
+    const anchor = firstKnown ? positions.get(firstKnown.id)! : previous.length;
+    const anchorGap = firstKnown ? entry.gaps.get(firstKnown.id) : undefined;
+    const prefix = page.hasMore === false ? [] : previous.slice(0, anchor);
+    for (const id of entry.gaps.keys()) {
+      if (page.hasMore === false || (positions.get(id) ?? -1) > anchor) entry.gaps.delete(id);
+    }
+    if (page.hasMore === false || prefix.length === 0) setHistoryCursor(entry, page);
+    const oldest = page.messages[0];
+    if (oldest && page.hasMore !== false && prefix.length > 0 && !positions.has(oldest.id)) {
+      if (firstKnown && anchorGap) entry.gaps.delete(firstKnown.id);
+      entry.gaps.set(oldest.id, { cursor: page.nextCursor, seen: new Set(page.nextCursor ? [page.nextCursor] : []) });
+    }
+    // A background read never discards an acknowledged send before a producer
+    // page has observed it, and never unlocks an uncertain send.
+    for (const message of page.messages) entry.confirmed.delete(message.id);
+    entry.messages = appendUniqueMobileItemsById(
+      appendUniqueMobileItemsById(prefix, page.messages), [...entry.confirmed.values()],
+    );
+    for (const id of entry.gaps.keys()) {
+      if (!entry.messages.some(message => message.id === id)) entry.gaps.delete(id);
+    }
+  }
+
   function conversation(contact: TalkContact) {
     const key = JSON.stringify([contact.type, contact.ap_id]);
     let entry = conversations.get(key);
@@ -104,6 +252,8 @@ export function createTalkController(options: {
         contact, messages: [], content: "", draftRevision: 0, sending: false, uncertain: false,
         readError: "", sendError: "", sendOutcome: 0, confirmed: new Map(),
         hasMore: undefined, nextCursor: null, cursors: new Set(), historyError: "",
+        gaps: new Map(),
+        pendingRead: false, homePending: false, acknowledged: new Set(),
       };
       conversations.set(key, entry);
     }
@@ -113,6 +263,8 @@ export function createTalkController(options: {
 
   async function open(contact: TalkContact) {
     if (!active(authority)) return;
+    stopReceive();
+    receiveFailed = false;
     const entry = conversation(contact);
     const expected = authority;
     const incarnation = ++view;
@@ -123,12 +275,18 @@ export function createTalkController(options: {
     const sendOutcome = entry.sendOutcome;
     selected = entry;
     entry.confirmed.clear();
+    entry.gaps.clear();
+    entry.pendingRead = false;
+    entry.acknowledged.clear();
+    entry.homePending = false;
     loading = true;
     loadingOlder = false;
     entry.historyError = "";
     entry.readError = "";
     publish();
     try {
+      await initializeObservedTalkRead(requestSession, contact, read.signal);
+      if (!current(expected, incarnation, entry)) return;
       const page = await loadTalkMessagePage(requestSession, contact, read.signal);
       if (!current(expected, incarnation, entry)) return;
       const { messages } = page;
@@ -143,18 +301,27 @@ export function createTalkController(options: {
         entry.sendError = "";
         entry.uncertain = false;
       }
+      entry.pendingRead = entry.messages.length > 0;
+      loading = false;
       publish();
-      await markTalkAsRead(requestSession, contact, read.signal);
+      // The loading fallback has now yielded to the rendered message list.
+      // The view's queued tail-follow runs before querying its visible IDs.
+      await Promise.resolve();
+      if (!current(expected, incarnation, entry)) return;
+      await acknowledgeVisible(entry, requestSession, read.signal, () => current(expected, incarnation, entry) && !read.signal.aborted);
       if (!current(expected, incarnation, entry)) return;
       await options.refreshHome();
+      if (current(expected, incarnation, entry)) entry.homePending = false;
     } catch (cause) {
       if (!current(expected, incarnation, entry)) return;
+      receiveFailed = true;
       entry.readError = errorMessage(cause, "トークを読み込めませんでした。");
     } finally {
       if (readAbort === read) readAbort = undefined;
       if (current(expected, incarnation, entry)) {
         loading = false;
         publish();
+        scheduleReceive();
       }
     }
   }
@@ -163,6 +330,7 @@ export function createTalkController(options: {
     const entry = selected;
     if (!active(authority) || !entry || loading || loadingOlder ||
       entry.hasMore !== true || !entry.nextCursor) return;
+    stopReceive();
     const expected = authority;
     const incarnation = view;
     const cursor = entry.nextCursor;
@@ -181,6 +349,7 @@ export function createTalkController(options: {
         page.messages.every((message) => entry.messages.some((shown) => shown.id === message.id))
       ))) throw new Error("以前のメッセージの続きを確認できませんでした。もう一度読み込んでください。");
       entry.messages = prependUniqueMobileItemsByKey(page.messages, entry.messages, (message) => message.id);
+      entry.pendingRead ||= page.messages.some(message => !entry.acknowledged.has(message.id));
       entry.hasMore = page.hasMore;
       entry.nextCursor = page.nextCursor;
       if (page.nextCursor) entry.cursors.add(page.nextCursor);
@@ -195,12 +364,76 @@ export function createTalkController(options: {
       if (current(expected, incarnation, entry)) {
         loadingOlder = false;
         publish();
+        scheduleReceive();
+      }
+    }
+  }
+
+  async function loadGap(beforeId: string) {
+    const entry = selected, gap = entry?.gaps.get(beforeId);
+    if (!active(authority) || !entry || !gap?.cursor || loading || loadingOlder) return;
+    stopReceive();
+    const expected = authority, incarnation = view, requestSession = session, cursor = gap.cursor;
+    const read = new AbortController();
+    readAbort?.abort();
+    readAbort = read;
+    loadingOlder = true;
+    entry.historyError = "";
+    publish();
+    try {
+      const page = await loadTalkMessagePage(requestSession, entry.contact, read.signal, cursor);
+      if (!current(expected, incarnation, entry) || entry.gaps.get(beforeId) !== gap) return;
+      if (page.messages.some(message => !isBeforeCursor(message, cursor)) ||
+        (page.hasMore && (!page.nextCursor || gap.seen.has(page.nextCursor)))) {
+        throw new Error("メッセージの間の続きを確認できませんでした。もう一度確認してください。");
+      }
+      const split = entry.messages.findIndex(message => message.id === beforeId);
+      if (split < 0) return;
+      const older = entry.messages.slice(0, split), newer = entry.messages.slice(split);
+      const firstKnown = page.messages.find(message => older.some(shown => shown.id === message.id));
+      const anchor = firstKnown ? older.findIndex(message => message.id === firstKnown.id) : -1;
+      const anchorGap = firstKnown ? entry.gaps.get(firstKnown.id) : undefined;
+      const prefix = page.hasMore === false ? [] : firstKnown
+        ? older.slice(0, anchor) : older;
+      if (!firstKnown && page.hasMore !== false && page.messages.length === 0) {
+        throw new Error("間のメッセージを確認できませんでした。");
+      }
+      for (const id of entry.gaps.keys()) {
+        const position = entry.messages.findIndex(message => message.id === id);
+        if (id === beforeId || (position < split && (
+          page.hasMore === false || (anchor >= 0 && position > anchor)
+        ))) entry.gaps.delete(id);
+      }
+      const extendsAnchor = firstKnown && anchorGap && page.messages[0]?.id !== firstKnown.id;
+      if ((!firstKnown || extendsAnchor) && page.hasMore !== false) {
+        if (firstKnown && anchorGap) entry.gaps.delete(firstKnown.id);
+        const seen = new Set(gap.seen);
+        if (page.nextCursor) seen.add(page.nextCursor);
+        entry.gaps.set(page.messages[0]!.id, { cursor: page.nextCursor, seen });
+      }
+      entry.messages = appendUniqueMobileItemsById(
+        appendUniqueMobileItemsById(prefix, page.messages), newer,
+      );
+      if (prefix.length === 0) setHistoryCursor(entry, page);
+      for (const id of entry.gaps.keys()) {
+        if (!entry.messages.some(message => message.id === id)) entry.gaps.delete(id);
+      }
+      // Gap/history reads do not acknowledge new messages or clear send uncertainty.
+    } catch (cause) {
+      if (current(expected, incarnation, entry)) entry.historyError = errorMessage(cause, "間のメッセージを読み込めませんでした。");
+    } finally {
+      if (readAbort === read) readAbort = undefined;
+      if (current(expected, incarnation, entry)) {
+        loadingOlder = false;
+        publish();
+        scheduleReceive();
       }
     }
   }
 
   function back() {
     if (disposed) return;
+    stopReceive();
     view += 1;
     readAbort?.abort();
     readAbort = undefined;
@@ -278,6 +511,7 @@ export function createTalkController(options: {
     const key = talkSessionIdentity(next);
     session = { ...next };
     if (key === sessionKey) return;
+    stopReceive();
     sessionKey = key;
     authority += 1;
     view += 1;
@@ -292,6 +526,7 @@ export function createTalkController(options: {
   }
 
   function dispose() {
+    stopReceive();
     disposed = true;
     authority += 1;
     view += 1;
@@ -304,10 +539,22 @@ export function createTalkController(options: {
     loadingOlder = false;
   }
 
-  return { state, open, loadOlder, back, setDraft, send, updateSession, dispose };
+  return { state, open, loadOlder, loadGap, back, setDraft, send, updateSession, foregroundChanged,
+    readVisible: () => { void refreshLatest(false); }, dispose };
 }
 
 
 function errorMessage(cause: unknown, fallback: string) {
   return cause instanceof Error ? cause.message : fallback;
+}
+
+function isBeforeCursor(message: TalkMessage, cursor: string): boolean {
+  if (!message.created_at || !Number.isFinite(Date.parse(message.created_at))) return false;
+  // Core's keyset uses binary UTF-8 text order, not JavaScript's UTF-16 order.
+  const encoder = new TextEncoder();
+  const value = encoder.encode(`${message.created_at} ${message.id}`), bound = encoder.encode(cursor);
+  for (let index = 0; index < Math.min(value.length, bound.length); index++) {
+    if (value[index] !== bound[index]) return value[index]! < bound[index]!;
+  }
+  return value.length < bound.length;
 }

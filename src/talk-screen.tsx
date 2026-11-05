@@ -1,4 +1,4 @@
-import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createSignal, createUniqueId, For, onCleanup, onMount, Show } from "solid-js";
 import {
   formatMobilePreviewDate,
   mobileTextRemaining,
@@ -19,6 +19,7 @@ import {
 import { createTalkController, type TalkState } from "./talk-controller.ts";
 import { talkSessionIdentity } from "./talk-session.ts";
 import type { TalkNotificationRequest } from "./talk-notification.ts";
+import type { TalkRequest } from "./talk-response.ts";
 import {
   displayHostRoutePath,
   hostRouteNoticeFor,
@@ -45,6 +46,30 @@ export function HostRouteNoticeBanner(props: {
       )}
     </Show>
   );
+}
+
+function RequestRejectionDialog(props: { request: TalkRequest; cancel: () => void; confirm: () => void }) {
+  let dialog!: HTMLDialogElement;
+  let cancel!: HTMLButtonElement;
+  const title = createUniqueId();
+  const opener = document.activeElement;
+  onMount(() => { dialog.showModal(); cancel.focus(); });
+  onCleanup(() => {
+    dialog.close();
+    if (opener instanceof HTMLElement && opener.isConnected && !opener.hasAttribute("disabled")) opener.focus();
+  });
+  return <dialog ref={dialog} class="request-confirmation" aria-labelledby={title}
+    onCancel={event => { event.preventDefault(); props.cancel(); }}>
+    <h3 id={title}>受信トークを拒否しますか？</h3>
+    <p>{props.request.sender.name ?? props.request.sender.preferred_username}</p>
+    <p class="request-address">{props.request.sender.ap_id}</p>
+    <p>この相手との現在のトークにある受信メッセージを削除します。元には戻せません。相手をブロックしません。</p>
+    <p>同じ相手との古い別の履歴がある場合は、一覧に残ることがあります。</p>
+    <div class="request-actions">
+      <button ref={cancel} type="button" class="text-button" onClick={() => props.cancel()}>戻る</button>
+      <button type="button" class="text-button request-reject" onClick={() => props.confirm()}>受信トークを拒否</button>
+    </div>
+  </dialog>;
 }
 
 export function TalkScreen(props: {
@@ -152,6 +177,51 @@ export function TalkScreen(props: {
           <button type="button" class="text-button" onClick={() => controller.dismissNotification()}>閉じる</button>
         </div>}
       </Show>
+      <Show when={state().requests?.visible}>
+        <MobilePreviewSection title="メッセージリクエスト" actions={<div class="request-actions">
+          <button type="button" class="text-button" disabled={state().requests?.loading || !!state().requests?.opening || state().requests?.rejecting}
+            onClick={() => void controller.refreshRequests()}>一覧を更新</button>
+          <button type="button" class="text-button" onClick={() => controller.back()}>トーク一覧に戻る</button>
+        </div>}>
+          <p class="empty">開くだけでは承認されません。返信すると相手とのトークが承認されます。</p>
+          <p class="empty">同じ相手に複数の履歴がある場合は、現在のトークを開きます。</p>
+          <Show when={state().requests?.error}>
+            <p class="talk-error" role="alert">{state().requests?.error}</p>
+          </Show>
+          <Show when={state().requests?.loading || state().requests?.rejecting}>
+            <p role="status">{state().requests?.rejecting ? "拒否の結果と一覧を確認中…" : "リクエストを確認中…"}</p>
+          </Show>
+          <Show when={!state().requests?.loading && !state().requests?.needsRefresh && !state().requests?.items.length}>
+            <p class="empty">メッセージリクエストはありません。</p>
+          </Show>
+          <MobilePreviewList class="request-list">
+            <For each={state().requests?.items}>
+              {item => <li>
+                <MobilePreviewCard class="request-card">
+                  <strong class="request-identity">{item.sender.name ?? item.sender.preferred_username}</strong>
+                  <small class="request-address">{item.sender.ap_id}</small>
+                  <p class="request-preview">{item.content || "本文のないメッセージ"}</p>
+                  <small>{item.created_at ? formatMobilePreviewDate(item.created_at, "ja-JP") : ""}</small>
+                  <div class="request-actions">
+                    <button type="button" class="text-button"
+                      disabled={state().requests?.needsRefresh || !!state().requests?.opening || state().requests?.rejecting || state().requests?.loading}
+                      onClick={() => void controller.openRequest(item)}>
+                      {state().requests?.opening === item.id ? "確認中…" : "現在のトークを開く"}
+                    </button>
+                    <button type="button" class="text-button request-reject"
+                      disabled={state().requests?.needsRefresh || !!state().requests?.opening || state().requests?.rejecting || state().requests?.loading}
+                      onClick={() => controller.confirmRejectRequest(item)}>受信トークを拒否…</button>
+                  </div>
+                </MobilePreviewCard>
+              </li>}
+            </For>
+          </MobilePreviewList>
+          <Show when={state().requests?.confirmation}>
+            {item => <RequestRejectionDialog request={item()} cancel={() => controller.cancelRejectRequest()}
+              confirm={() => void controller.rejectRequest()} />}
+          </Show>
+        </MobilePreviewSection>
+      </Show>
       <Show when={selected()}>
         {(contact) => (
           <MobilePreviewSection
@@ -187,7 +257,7 @@ export function TalkScreen(props: {
                     type="button"
                     class="text-button"
                     disabled={sending()}
-                    onClick={() => void controller.open(contact())}
+                    onClick={() => void controller.reload()}
                   >
                     トークを更新
                   </button>
@@ -291,7 +361,9 @@ export function TalkScreen(props: {
           </MobilePreviewSection>
         )}
       </Show>
-      <Show when={!selected()}>
+      <Show when={!selected() && !state().requests?.visible}>
+        <button type="button" class="text-button request-entry" disabled={!props.home}
+          onClick={() => void controller.showRequests()}>メッセージリクエスト（{props.home?.requestCount ?? "…"}）</button>
         <div class="talk-list">
           <Show
             when={props.home?.contacts.length}

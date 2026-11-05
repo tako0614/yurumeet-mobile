@@ -29,6 +29,14 @@ API requests have a 15-second budget including the response body. Leaving a conv
 retaining its pending send and draft. Sign-out or a change of credentials or API destination retires prior reads,
 sends and cached conversation data, so late responses cannot appear in the next account.
 
+The native message-request inbox lists incoming requests for the signed-in account. Opening the peer's current
+conversation does not accept it; an explicit reply does. Normal visible-message read receipts still apply.
+Rejecting requires confirmation and removes incoming messages in the peer's current conversation without blocking
+the peer. An older conversation from the same sender may remain. The app reloads the server list after rejection;
+an unknown result requires an explicit list refresh before another destructive action, never an automatic retry.
+Rejection requires the host's guarded `/api/dm/requests/reject-pending` API; older hosts fail closed without legacy fallback.
+Changing accounts or leaving the inbox retires pending reads and ignores late replies while keeping unrelated drafts.
+
 DMs and group conversations open with the latest 50 messages. Use the older-message action to prepend history;
 the timestamp-plus-ID cursor retains messages that share a timestamp. Existing messages, confirmed sends and
 drafts stay intact. A failed page can be retried explicitly from the same position. Fetching older history does

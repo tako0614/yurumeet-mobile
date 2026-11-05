@@ -1,5 +1,5 @@
 import { talkSessionIdentity } from "./talk-session.ts";
-import type { TalkMessagePage } from "./talk-response.ts";
+import type { TalkMessagePage, TalkRequest } from "./talk-response.ts";
 import type { TalkNotificationRequest } from "./talk-notification.ts";
 import {
   appendUniqueMobileItemsById,
@@ -16,11 +16,24 @@ import {
   sendUserMessage,
   isUncertainMessageSend,
   loadTalkNotificationContact,
+  loadTalkRequests,
+  loadTalkRequestContact,
+  rejectTalkRequest,
   type TalkContact,
   type TalkMessage,
 } from "./api.ts";
 
 export interface TalkState {
+  readonly requests?: {
+    readonly visible: boolean;
+    readonly items: readonly TalkRequest[];
+    readonly loading: boolean;
+    readonly opening?: string;
+    readonly rejecting: boolean;
+    readonly confirmation?: TalkRequest;
+    readonly needsRefresh: boolean;
+    readonly error: string;
+  };
   readonly notification?: { readonly loading: boolean; readonly error: string };
   readonly selected?: TalkContact;
   readonly messages: readonly TalkMessage[];
@@ -87,10 +100,21 @@ export function createTalkController(options: {
   let receiveFailed = false;
   let notificationAbort: AbortController | undefined;
   let notification: { request: TalkNotificationRequest; recipient: string; loading: boolean; error: string } | undefined;
+  let requestsVisible = false, returnToRequests = false;
+  let requestItems: TalkRequest[] = [], requestError = "", requestNeedsRefresh = true;
+  let requestConfirmation: TalkRequest | undefined;
+  let requestOpening: string | undefined;
+  let requestWork: "list" | "open" | "reject" | undefined;
+  let requestAbort: AbortController | undefined;
   const conversations = new Map<string, Conversation>();
 
   function state(): TalkState {
     return {
+      requests: requestsVisible || returnToRequests ? {
+        visible: requestsVisible, items: [...requestItems], loading: requestWork === "list",
+        opening: requestOpening, rejecting: requestWork === "reject", confirmation: requestConfirmation,
+        needsRefresh: requestNeedsRefresh, error: requestError,
+      } : undefined,
       notification: notification ? { loading: notification.loading, error: notification.error } : undefined,
       selected: selected?.contact,
       messages: selected?.messages ?? [],
@@ -139,6 +163,7 @@ export function createTalkController(options: {
 
   async function openNotification(request: TalkNotificationRequest, recipient: string) {
     if (!active(authority) || request.sessionKey !== sessionKey) return;
+    stopRequests();
     notificationAbort?.abort();
     const read = new AbortController();
     notificationAbort = read;
@@ -167,6 +192,140 @@ export function createTalkController(options: {
   function retryNotification() {
     if (!notification || notification.loading) return Promise.resolve();
     return openNotification(notification.request, notification.recipient);
+  }
+
+  function stopRequests() {
+    requestAbort?.abort();
+    requestAbort = undefined;
+    requestWork = undefined;
+    requestOpening = undefined;
+    requestConfirmation = undefined;
+    requestsVisible = false;
+    returnToRequests = false;
+  }
+
+  async function showRequests() {
+    if (!active(authority)) return;
+    dismissNotification();
+    stopRequests();
+    stopReceive();
+    view += 1;
+    readAbort?.abort();
+    readAbort = undefined;
+    selected = undefined;
+    loading = false;
+    loadingOlder = false;
+    requestsVisible = true;
+    await refreshRequests();
+  }
+
+  async function refreshRequests() {
+    if (!active(authority) || !requestsVisible || requestAbort) return;
+    requestConfirmation = undefined;
+    requestNeedsRefresh = true;
+    requestError = "";
+    requestWork = "list";
+    const read = new AbortController(), expected = authority, incarnation = view;
+    requestAbort = read;
+    const owns = () => active(expected) && requestsVisible && view === incarnation && requestAbort === read && !read.signal.aborted;
+    publish();
+    try {
+      const items = await loadTalkRequests(session, read.signal);
+      if (!owns()) return;
+      requestItems = items;
+      requestNeedsRefresh = false;
+    } catch {
+      if (owns()) requestError = "リクエストを確認できませんでした。一覧を更新して、現在の状態を確認してください。";
+    } finally {
+      if (requestAbort === read) { requestAbort = undefined; requestWork = undefined; }
+      if (active(expected) && requestsVisible && view === incarnation) publish();
+    }
+  }
+
+  function currentRequest(item: TalkRequest) {
+    return active(authority) && requestsVisible && !requestNeedsRefresh && !requestAbort && requestItems.includes(item);
+  }
+
+  async function openRequest(item: TalkRequest) {
+    if (!currentRequest(item)) return;
+    requestConfirmation = undefined;
+    requestError = "";
+    requestWork = "open";
+    requestOpening = item.id;
+    const read = new AbortController(), expected = authority, incarnation = view;
+    requestAbort = read;
+    const owns = () => active(expected) && requestsVisible && view === incarnation && requestAbort === read && !read.signal.aborted;
+    publish();
+    try {
+      const contact = await loadTalkRequestContact(session, item.sender.ap_id, read.signal);
+      if (!owns()) return;
+      requestAbort = undefined;
+      requestWork = undefined;
+      requestOpening = undefined;
+      await open(contact, true);
+    } catch {
+      if (owns()) requestError = "この相手のトークを開けませんでした。一覧からもう一度選べます。";
+    } finally {
+      if (requestAbort === read) { requestAbort = undefined; requestWork = undefined; requestOpening = undefined; publish(); }
+    }
+  }
+
+  function peerSendUnresolved(item: TalkRequest) {
+    const entry = conversations.get(JSON.stringify(["user", item.sender.ap_id]));
+    return !!entry && (entry.sending || entry.uncertain);
+  }
+
+  function confirmRejectRequest(item: TalkRequest) {
+    if (!currentRequest(item)) return;
+    if (peerSendUnresolved(item)) {
+      requestError = "この相手への送信結果が未確認です。先にトークを開いて確認してください。";
+    } else {
+      requestConfirmation = item;
+      requestError = "";
+    }
+    publish();
+  }
+
+  function cancelRejectRequest() { requestConfirmation = undefined; publish(); }
+
+  async function rejectRequest() {
+    const item = requestConfirmation;
+    if (!item || !currentRequest(item) || peerSendUnresolved(item)) return;
+    requestConfirmation = undefined;
+    // From dispatch until a successful list read, the outcome is unconfirmed.
+    // Closing/canceling the view cannot undo a committed server deletion.
+    requestNeedsRefresh = true;
+    requestWork = "reject";
+    requestError = "";
+    const read = new AbortController(), expected = authority, incarnation = view;
+    requestAbort = read;
+    const requestSession = session;
+    const owns = () => active(expected) && requestsVisible && view === incarnation && requestAbort === read && !read.signal.aborted;
+    let acknowledged = false;
+    publish();
+    try {
+      await rejectTalkRequest(requestSession, item.sender.ap_id, read.signal);
+      if (!owns()) return;
+      acknowledged = true;
+      // The public API selects the peer's current conversation, not a row ID.
+      // A different older conversation for the same sender may remain pending.
+      const items = await loadTalkRequests(requestSession, read.signal);
+      if (!owns()) return;
+      requestItems = items;
+      requestNeedsRefresh = false;
+      await options.refreshHome();
+    } catch (cause) {
+      if (owns()) requestError = acknowledged
+        ? "拒否しましたが、一覧または件数を確認できませんでした。一覧を更新してください。"
+        : cause instanceof MobileApiError && cause.status === 404
+          ? "このサーバーは安全なリクエスト拒否に対応していません。サーバーの更新が必要です。"
+        : cause instanceof MobileApiError && cause.status === 409
+          ? "リクエストの状態が変わりました。一覧を更新してください。先に完了した削除がある場合があります。"
+        : "拒否の結果を確認できませんでした。一覧を更新して現在の状態を確認してください。自動で再実行はしません。";
+    } finally {
+      if (requestAbort === read) { requestAbort = undefined; requestWork = undefined; }
+      if (active(expected) && requestsVisible && view === incarnation) publish();
+    }
   }
 
   function canReceive() {
@@ -307,9 +466,11 @@ export function createTalkController(options: {
     return entry;
   }
 
-  async function open(contact: TalkContact) {
+  async function open(contact: TalkContact, fromRequest = false) {
     if (!active(authority)) return;
     dismissNotification();
+    stopRequests();
+    returnToRequests = fromRequest;
     stopReceive();
     receiveFailed = false;
     const entry = conversation(contact);
@@ -480,6 +641,8 @@ export function createTalkController(options: {
 
   function back() {
     if (disposed) return;
+    const inbox = returnToRequests;
+    stopRequests();
     dismissNotification();
     stopReceive();
     view += 1;
@@ -488,6 +651,7 @@ export function createTalkController(options: {
     selected = undefined;
     loading = false;
     loadingOlder = false;
+    if (inbox) { requestsVisible = true; void refreshRequests(); }
     publish();
   }
 
@@ -496,6 +660,10 @@ export function createTalkController(options: {
     selected.content = value;
     selected.draftRevision += 1;
     publish();
+  }
+
+  function reload() {
+    return selected ? open(selected.contact, returnToRequests) : Promise.resolve();
   }
 
   async function send() {
@@ -559,6 +727,10 @@ export function createTalkController(options: {
     const key = talkSessionIdentity(next);
     session = { ...next };
     if (key === sessionKey) return;
+    stopRequests();
+    requestItems = [];
+    requestError = "";
+    requestNeedsRefresh = true;
     notificationAbort?.abort();
     notificationAbort = undefined;
     notification = undefined;
@@ -577,6 +749,8 @@ export function createTalkController(options: {
   }
 
   function dispose() {
+    stopRequests();
+    requestItems = [];
     notificationAbort?.abort();
     notificationAbort = undefined;
     notification = undefined;
@@ -593,7 +767,8 @@ export function createTalkController(options: {
     loadingOlder = false;
   }
 
-  return { state, open, openNotification, retryNotification, dismissNotification, loadOlder, loadGap, back, setDraft, send, updateSession, foregroundChanged,
+  return { state, open, openNotification, retryNotification, dismissNotification, showRequests, refreshRequests, openRequest,
+    confirmRejectRequest, cancelRejectRequest, rejectRequest, loadOlder, loadGap, back, reload, setDraft, send, updateSession, foregroundChanged,
     readVisible: () => { void refreshLatest(false); }, dispose };
 }
 

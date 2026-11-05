@@ -143,3 +143,80 @@ body {
   color: var(--shell-label);
   font-size: 0.86rem;
 }
+.request-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.request-entry {
+  margin-block: 0.5rem 1rem;
+}
+
+.request-list {
+  list-style: none;
+  padding: 0;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.talk-surface,
+.talk-surface .preview-section {
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.request-list > li {
+  min-width: 0;
+}
+
+.request-list .request-card {
+  display: block;
+  min-width: 0;
+}
+
+.request-card .request-actions {
+  margin-top: 0.75rem;
+}
+
+.request-card .request-identity,
+.request-card .request-address {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.request-card .request-preview {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
+.request-identity,
+.request-preview,
+.request-confirmation p {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.request-confirmation {
+  box-sizing: border-box;
+  max-width: min(32rem, calc(100vw - 2rem));
+  max-height: calc(100dvh - 2rem);
+  overflow: auto;
+  padding: 1.5rem;
+  border: 1px solid var(--shell-border);
+  border-radius: 1rem;
+  color: var(--shell-text);
+  background: var(--shell-card);
+}
+
+.request-confirmation::backdrop {
+  background: rgb(0 0 0 / 35%);
+}
+
+.request-reject {
+  color: #9c3434;
+}

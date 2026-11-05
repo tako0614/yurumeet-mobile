@@ -21,6 +21,10 @@ import {
   notificationContactResponse,
   REQUESTS_RESPONSE,
   REQUEST_REJECT_RESPONSE,
+  ownedTalkMessageResponse,
+  ownedTalkEditResponse,
+  OWNED_TALK_DELETE_RESPONSE,
+  isTalkMessageRevision,
   SENT_MESSAGE_RESPONSE,
   type TalkActor,
   type TalkContact,
@@ -31,6 +35,34 @@ import {
 import { isTalkNotificationId, type TalkNotificationRequest } from "./talk-notification.ts";
 
 export type { TalkContact, TalkMessage } from "./talk-response.ts";
+
+function ownedTalkPath(id: string) {
+  if (!isTalkNotificationId(id)) throw new Error("メッセージの情報を確認できませんでした。");
+  return `/api/dm/messages/${encodeURIComponent(id)}`;
+}
+
+export async function loadOwnedTalkMessage(session: MobileSession, id: string, actorApId: string, signal?: AbortSignal) {
+  const path = ownedTalkPath(id);
+  try { return await response(session, path, ownedTalkMessageResponse(id, actorApId), { signal }); }
+  catch (cause) {
+    if (cause instanceof MobileApiError && cause.status === 404 && cause.detail === "owned_dm_not_found") return null;
+    throw cause; // An unsupported host404 is not a deletion observation.
+  }
+}
+
+export async function editOwnedTalkMessage(session: MobileSession, id: string, content: string, revision: string, signal?: AbortSignal) {
+  const path = ownedTalkPath(id);
+  if (!content.trim() || content.trim().length > 5000 || !isTalkMessageRevision(revision)) throw new Error("編集内容を確認してください。");
+  return response(session, path, ownedTalkEditResponse(id, content), { method: "PATCH", headers: {
+    "content-type": "application/json", "if-match": JSON.stringify(revision),
+  }, body: JSON.stringify({ content }), signal }, true);
+}
+
+export async function deleteOwnedTalkMessage(session: MobileSession, id: string, revision: string, signal?: AbortSignal) {
+  const path = ownedTalkPath(id);
+  if (!isTalkMessageRevision(revision)) throw new Error("メッセージの現在の状態を確認してください。");
+  return response(session, path, OWNED_TALK_DELETE_RESPONSE, { method: "DELETE", headers: { "if-match": JSON.stringify(revision) }, signal }, true);
+}
 
 export async function loadTalkRequests(session: MobileSession, signal?: AbortSignal): Promise<TalkRequest[]> {
   return response(session, "/api/dm/requests", REQUESTS_RESPONSE, { signal });

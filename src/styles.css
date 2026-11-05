@@ -116,6 +116,8 @@ body {
   margin-left: auto;
 }
 .message-bubble {
+  display: block;
+  min-width: 0;
   border-radius: 18px 18px 18px 6px;
   background: #fff;
 }
@@ -219,4 +221,17 @@ body {
 
 .request-reject {
   color: #9c3434;
+}
+
+.message-action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.message-current-content p,
+.message-delete-preview {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }

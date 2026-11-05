@@ -20,6 +20,7 @@ import { createTalkController, type TalkState } from "./talk-controller.ts";
 import { talkSessionIdentity } from "./talk-session.ts";
 import type { TalkNotificationRequest } from "./talk-notification.ts";
 import type { TalkRequest } from "./talk-response.ts";
+import type { TalkMessageActionState } from "./talk-message-actions.ts";
 import {
   displayHostRoutePath,
   hostRouteNoticeFor,
@@ -72,6 +73,78 @@ function RequestRejectionDialog(props: { request: TalkRequest; cancel: () => voi
   </dialog>;
 }
 
+function MessageDeleteDialog(props: {
+  action: TalkMessageActionState;
+  cancel: () => void;
+  confirm: () => void;
+  reconcile: () => void;
+  leave: () => void;
+}) {
+  let dialog!: HTMLDialogElement, cancel!: HTMLButtonElement, reconcile: HTMLButtonElement | undefined;
+  const title = createUniqueId(), opener = document.activeElement;
+  onMount(() => { dialog.showModal(); cancel.focus(); });
+  createEffect(() => {
+    if (props.action.needsReadback && !props.action.loading && !props.action.pending) queueMicrotask(() => reconcile?.focus());
+  });
+  onCleanup(() => { dialog.close(); queueMicrotask(() => {
+    if (opener instanceof HTMLElement && opener.isConnected && !opener.hasAttribute("disabled")) opener.focus();
+  }); });
+  return <dialog ref={dialog} class="request-confirmation message-delete-dialog" aria-labelledby={title}
+    aria-busy={props.action.loading || props.action.pending}
+    onCancel={event => { event.preventDefault(); props.action.canCancel ? props.cancel() : props.leave(); }}>
+    <h3 id={title}>メッセージを削除しますか？</h3>
+    <p class="message-delete-preview">{props.action.serverContent || "本文のないメッセージ"}</p>
+    <p>このサーバーの本文と添付を削除します。相手側の表示は接続先によって異なります。元には戻せません。</p>
+    <Show when={props.action.error}><p class="talk-error" role="alert">{props.action.error}</p></Show>
+    <Show when={props.action.loading || props.action.pending}><p role="status">{props.action.pending ? "削除の結果を確認中…" : "現在のメッセージを確認中…"}</p></Show>
+    <div class="message-action-buttons">
+      <button ref={cancel} type="button" class="text-button" disabled={!props.action.canCancel} onClick={() => props.cancel()}>戻る</button>
+      <Show when={props.action.needsReadback && !props.action.loading && !props.action.pending}>
+        <button ref={reconcile} type="button" class="text-button" onClick={() => props.reconcile()}>現在の1件を確認</button>
+      </Show>
+      <button type="button" class="text-button request-reject" disabled={!props.action.canSave} onClick={() => props.confirm()}>メッセージを削除</button>
+      <button type="button" class="text-button" onClick={() => props.leave()}>トーク一覧へ</button>
+    </div>
+    <Show when={props.action.pending || !props.action.canCancel}><small>一覧に戻っても、確認中の変更は取り消されません。</small></Show>
+  </dialog>;
+}
+
+function MessageEditPanel(props: {
+  action: TalkMessageActionState;
+  setContent: (value: string) => void;
+  save: () => void;
+  cancel: () => void;
+  reconcile: () => void;
+  leave: () => void;
+}) {
+  let field!: HTMLTextAreaElement, focused = false;
+  createEffect(() => { if (!props.action.loading && !focused) { focused = true; queueMicrotask(() => field?.focus()); } });
+  return <MobileComposeSection title="メッセージを編集">
+    <Show when={props.action.error}><p class="talk-error" role="alert">{props.action.error}</p></Show>
+    <Show when={props.action.loading}><p role="status">現在のメッセージを確認中…</p></Show>
+    <MobileComposeForm onSubmit={event => { event.preventDefault(); props.save(); }}>
+      <MobileComposeField label="編集する本文">
+        <textarea ref={field} value={props.action.content} maxlength={5000} disabled={props.action.loading}
+          onInput={event => props.setContent(event.currentTarget.value)}
+          onKeyDown={event => { if (event.key === "Escape" && props.action.canCancel) { event.preventDefault(); props.cancel(); } }} />
+      </MobileComposeField>
+      <MobileComposeFooter detail={`あと ${Math.max(0, 5000 - props.action.content.trim().length)} 文字`}>
+        <button type="submit" class="primary" disabled={!props.action.canSave} aria-busy={props.action.pending}>{props.action.pending ? "保存中…" : "変更を保存"}</button>
+      </MobileComposeFooter>
+    </MobileComposeForm>
+    <div class="message-action-buttons">
+      <button type="button" class="text-button" disabled={!props.action.canCancel} onClick={() => props.cancel()}>編集を閉じる</button>
+      <Show when={props.action.needsReadback && !props.action.loading && !props.action.pending}>
+        <button type="button" class="text-button" onClick={() => props.reconcile()}>現在の1件を確認</button>
+      </Show>
+      <button type="button" class="text-button" onClick={() => props.leave()}>トーク一覧へ</button>
+    </div>
+    <Show when={!props.action.loading && !props.action.needsReadback && props.action.serverContent !== props.action.content.trim()}>
+      <details class="message-current-content"><summary>サーバーの現在の本文</summary><p>{props.action.serverContent || "本文のないメッセージ"}</p></details>
+    </Show>
+  </MobileComposeSection>;
+}
+
 export function TalkScreen(props: {
   home?: YurumeetMobileHome;
   session: MobileSession;
@@ -83,11 +156,12 @@ export function TalkScreen(props: {
   const [foreground, setForeground] = createSignal(document.visibilityState !== "hidden");
   const [state, setState] = createSignal<TalkState>({
     messages: [], content: "", loading: false, loadingOlder: false, refreshing: false, gaps: [], hasMore: undefined, historyError: "",
-    sending: false, uncertain: false, canSend: false, error: "",
+    sending: false, uncertain: false, canSend: false, canManageMessages: false, error: "",
   });
   let surface!: HTMLDivElement;
   const controller = createTalkController({
     session: props.session,
+    actorApId: props.home?.actor.ap_id,
     refreshHome: () => props.refreshHome(),
     onChange: next => {
       const previous = state();
@@ -109,10 +183,11 @@ export function TalkScreen(props: {
       .map(row => row.dataset.messageId!),
     receive: {
       isForeground: () => document.visibilityState !== "hidden",
-      canMarkRead: () => !!surface?.isConnected,
+      canMarkRead: () => !!surface?.isConnected && !state().messageAction &&
+        !document.querySelector("dialog[open]"),
     },
   });
-  createEffect(() => controller.updateSession(props.session));
+  createEffect(() => { controller.updateSession(props.session); controller.updateActor(props.home?.actor.ap_id); });
   createEffect(() => {
     const request = props.notificationRequest, home = props.home;
     if (!request) return;
@@ -231,7 +306,7 @@ export function TalkScreen(props: {
                 <button
                   type="button"
                   class="text-button"
-                  disabled={loading() || state().refreshing || state().loadingOlder || sending()}
+                  disabled={loading() || state().refreshing || state().loadingOlder || sending() || !!state().messageAction}
                   aria-busy={state().refreshing}
                   onClick={() => controller.foregroundChanged()}
                 >
@@ -256,7 +331,7 @@ export function TalkScreen(props: {
                   <button
                     type="button"
                     class="text-button"
-                    disabled={sending()}
+                    disabled={sending() || state().messageAction?.pending}
                     onClick={() => void controller.reload()}
                   >
                     トークを更新
@@ -267,7 +342,7 @@ export function TalkScreen(props: {
                 <button
                   type="button"
                   class="text-button"
-                  disabled={state().hasMore !== true || state().loadingOlder}
+                  disabled={state().hasMore !== true || state().loadingOlder || !!state().messageAction}
                   aria-busy={state().loadingOlder}
                   onClick={() => void loadOlder()}
                 >
@@ -277,6 +352,7 @@ export function TalkScreen(props: {
               </Show>
               <Show when={state().historyError}>
                 <p class="talk-error" role="alert">{state().historyError}</p>
+                <button type="button" class="text-button" disabled={state().messageAction?.pending} onClick={() => void controller.reload()}>トークを更新</button>
               </Show>
               <Show when={state().hasMore === undefined && !error()}>
                 <p class="empty">以前のメッセージの有無を確認できません。</p>
@@ -300,7 +376,7 @@ export function TalkScreen(props: {
                               <button
                                 type="button"
                                 class="text-button"
-                                disabled={state().loadingOlder || loading()}
+                                disabled={state().loadingOlder || loading() || !!state().messageAction}
                                 onClick={() => void loadGap(message.id)}
                               >
                                 間のメッセージを取得
@@ -320,13 +396,28 @@ export function TalkScreen(props: {
                             ? formatMobilePreviewDate(message.created_at, "ja-JP")
                             : ""}
                         </small>
+                        <Show when={contact().type === "user" && message.sender.ap_id === props.home?.actor.ap_id}>
+                          <div class="message-action-buttons">
+                            <button type="button" class="text-button" disabled={!state().canManageMessages} onClick={() => void controller.beginMessageEdit(message.id)}>編集</button>
+                            <button type="button" class="text-button" disabled={!state().canManageMessages} onClick={() => void controller.beginMessageDelete(message.id)}>削除…</button>
+                          </div>
+                        </Show>
                       </MobilePreviewCard>
                     </li>
                   )}
                 </For>
               </MobilePreviewList>
             </Show>
+            <Show when={state().messageAction?.kind === "edit" && state().messageAction}>
+              {action => <MessageEditPanel action={action()} setContent={value => controller.setMessageEditContent(value)} save={() => void controller.saveMessageEdit()}
+                cancel={() => controller.cancelMessageAction()} reconcile={() => void controller.reconcileMessageAction()} leave={() => controller.back()} />}
+            </Show>
+            <Show when={state().messageAction?.kind === "delete" && state().messageAction}>
+              {action => <MessageDeleteDialog action={action()} cancel={() => controller.cancelMessageAction()} confirm={() => void controller.confirmMessageDelete()}
+                reconcile={() => void controller.reconcileMessageAction()} leave={() => controller.back()} />}
+            </Show>
             <MobileComposeSection title="メッセージ">
+              <Show when={state().messageAction}><p role="status">メッセージの変更・確認中は、新しい送信を待機します。</p></Show>
               <Show when={state().uncertain}>
                 <p role="status">送信結果が未確認です。トークを更新し、同じ内容が届いていないか確認してから操作してください。</p>
               </Show>

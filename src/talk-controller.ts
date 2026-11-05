@@ -1,6 +1,7 @@
 import { talkSessionIdentity } from "./talk-session.ts";
 import type { TalkMessagePage, TalkRequest } from "./talk-response.ts";
 import type { TalkNotificationRequest } from "./talk-notification.ts";
+import { createTalkMessageActions, type TalkMessageActionState } from "./talk-message-actions.ts";
 import {
   appendUniqueMobileItemsById,
   prependUniqueMobileItemsByKey,
@@ -24,6 +25,8 @@ import {
 } from "./api.ts";
 
 export interface TalkState {
+  readonly messageAction?: TalkMessageActionState;
+  readonly canManageMessages: boolean;
   readonly requests?: {
     readonly visible: boolean;
     readonly items: readonly TalkRequest[];
@@ -51,6 +54,7 @@ export interface TalkState {
 }
 
 interface Conversation {
+  messageActions?: ReturnType<typeof createTalkMessageActions>;
   contact: TalkContact;
   messages: readonly TalkMessage[];
   content: string;
@@ -76,6 +80,7 @@ interface Conversation {
 // owns reads, including leaving and reopening the same AP ID.
 export function createTalkController(options: {
   session: MobileSession;
+  actorApId?: string;
   refreshHome: () => Promise<void>;
   onChange?: (state: TalkState) => void;
   isActive?: () => boolean;
@@ -87,6 +92,7 @@ export function createTalkController(options: {
   };
 }) {
   let session = { ...options.session };
+  let actorApId = options.actorApId;
   let sessionKey = talkSessionIdentity(session);
   let authority = 0;
   let view = 0;
@@ -110,6 +116,9 @@ export function createTalkController(options: {
 
   function state(): TalkState {
     return {
+      messageAction: selected?.messageActions?.state(),
+      canManageMessages: active(authority) && !!actorApId && selected?.contact.type === "user" && !loading && !loadingOlder &&
+        !selected.sending && !selected.uncertain && !selected.messageActions?.state(),
       requests: requestsVisible || returnToRequests ? {
         visible: requestsVisible, items: [...requestItems], loading: requestWork === "list",
         opening: requestOpening, rejecting: requestWork === "reject", confirmation: requestConfirmation,
@@ -128,7 +137,7 @@ export function createTalkController(options: {
       sending: selected?.sending ?? false,
       uncertain: selected?.uncertain ?? false,
       canSend: active(authority) && !!selected && !selected.uncertain && canSubmitMobileText({
-        value: selected.content, disabled: loading || selected.sending, maxLength: 2000,
+        value: selected.content, disabled: loading || selected.sending || !!selected.messageActions?.state(), maxLength: 2000,
       }),
       error: selected?.sendError || selected?.readError || "",
     };
@@ -272,13 +281,14 @@ export function createTalkController(options: {
 
   function peerSendUnresolved(item: TalkRequest) {
     const entry = conversations.get(JSON.stringify(["user", item.sender.ap_id]));
-    return !!entry && (entry.sending || entry.uncertain);
+    const action = entry?.messageActions?.state();
+    return !!entry && (entry.sending || entry.uncertain || !!action?.pending || (!!action?.needsReadback && !action.canCancel));
   }
 
   function confirmRejectRequest(item: TalkRequest) {
     if (!currentRequest(item)) return;
     if (peerSendUnresolved(item)) {
-      requestError = "この相手への送信結果が未確認です。先にトークを開いて確認してください。";
+      requestError = "この相手への送信結果または変更結果が未確認です。先にトークを開いて確認してください。";
     } else {
       requestConfirmation = item;
       requestError = "";
@@ -329,7 +339,7 @@ export function createTalkController(options: {
   }
 
   function canReceive() {
-    return !!options.receive && options.receive.isForeground() && active(authority) && !!selected;
+    return !!options.receive && options.receive.isForeground() && active(authority) && !!selected && !selected.messageActions?.state();
   }
 
   function scheduleReceive() {
@@ -461,6 +471,38 @@ export function createTalkController(options: {
         pendingRead: false, homePending: false, acknowledged: new Set(),
       };
       conversations.set(key, entry);
+      const owned = entry, expected = authority;
+      entry.messageActions = createTalkMessageActions({
+        session: () => session, actor: () => actorApId,
+        active: () => active(expected) && conversations.get(key) === owned,
+        isCurrent: () => selected === owned && owned.contact.type === "user" && !loading && !loadingOlder && !owned.sending && !owned.uncertain,
+        message: id => owned.messages.find(message => message.id === id),
+        pauseReads() {
+          if (selected !== owned) return;
+          dismissNotification(); stopReceive(); view += 1; readAbort?.abort(); readAbort = undefined;
+        },
+        adopt(message) {
+          owned.messages = owned.messages.map(previous => previous.id === message.id ? message : previous);
+          if (owned.confirmed.has(message.id)) owned.confirmed.set(message.id, message);
+        },
+        remove(id) {
+          const index = owned.messages.findIndex(message => message.id === id), next = index >= 0 ? owned.messages[index + 1] : undefined;
+          const gap = owned.gaps.get(id);
+          owned.messages = owned.messages.filter(message => message.id !== id);
+          owned.confirmed.delete(id); owned.acknowledged.delete(id); owned.gaps.delete(id);
+          if (gap && next && !owned.gaps.has(next.id)) owned.gaps.set(next.id, gap);
+          else if (gap && !next) {
+            owned.hasMore = undefined;
+            owned.historyError = "削除したメッセージの前後に未確認の履歴があります。トークを更新して確認してください。";
+          }
+        },
+        onChange: publish,
+        onIdle: () => { if (selected === owned) scheduleReceive(); },
+        async afterCommit() {
+          try { await options.refreshHome(); }
+          catch { if (active(expected)) { owned.readError = "変更は保存しましたが、トーク一覧を更新できませんでした。"; publish(); } }
+        },
+      });
     }
     entry.contact = contact;
     return entry;
@@ -468,6 +510,7 @@ export function createTalkController(options: {
 
   async function open(contact: TalkContact, fromRequest = false) {
     if (!active(authority)) return;
+    selected?.messageActions?.abortRead();
     dismissNotification();
     stopRequests();
     returnToRequests = fromRequest;
@@ -482,6 +525,9 @@ export function createTalkController(options: {
     const requestSession = session;
     const sendOutcome = entry.sendOutcome;
     selected = entry;
+    if (entry.messageActions?.state()?.pending) {
+      loading = false; loadingOlder = false; publish(); return;
+    }
     entry.confirmed.clear();
     entry.gaps.clear();
     entry.pendingRead = false;
@@ -536,7 +582,7 @@ export function createTalkController(options: {
 
   async function loadOlder() {
     const entry = selected;
-    if (!active(authority) || !entry || loading || loadingOlder ||
+    if (!active(authority) || !entry || entry.messageActions?.state() || loading || loadingOlder ||
       entry.hasMore !== true || !entry.nextCursor) return;
     stopReceive();
     const expected = authority;
@@ -579,7 +625,7 @@ export function createTalkController(options: {
 
   async function loadGap(beforeId: string) {
     const entry = selected, gap = entry?.gaps.get(beforeId);
-    if (!active(authority) || !entry || !gap?.cursor || loading || loadingOlder) return;
+    if (!active(authority) || !entry || entry.messageActions?.state() || !gap?.cursor || loading || loadingOlder) return;
     stopReceive();
     const expected = authority, incarnation = view, requestSession = session, cursor = gap.cursor;
     const read = new AbortController();
@@ -641,6 +687,7 @@ export function createTalkController(options: {
 
   function back() {
     if (disposed) return;
+    selected?.messageActions?.abortRead();
     const inbox = returnToRequests;
     stopRequests();
     dismissNotification();
@@ -663,12 +710,13 @@ export function createTalkController(options: {
   }
 
   function reload() {
+    if (selected?.messageActions?.state()?.pending) return Promise.resolve();
     return selected ? open(selected.contact, returnToRequests) : Promise.resolve();
   }
 
   async function send() {
     const entry = selected;
-    if (!active(authority) || !entry || entry.uncertain || !canSubmitMobileText({
+    if (!active(authority) || !entry || entry.uncertain || entry.messageActions?.state() || !canSubmitMobileText({
       value: entry.content, disabled: loading || entry.sending, maxLength: 2000,
     })) return;
     const expected = authority;
@@ -727,6 +775,20 @@ export function createTalkController(options: {
     const key = talkSessionIdentity(next);
     session = { ...next };
     if (key === sessionKey) return;
+    sessionKey = key;
+    actorApId = undefined;
+    retireConversations();
+  }
+
+  function updateActor(next: string | undefined) {
+    if (disposed || !next || next === actorApId) return;
+    const changed = actorApId !== undefined;
+    actorApId = next;
+    if (changed) retireConversations();
+    else publish();
+  }
+
+  function retireConversations() {
     stopRequests();
     requestItems = [];
     requestError = "";
@@ -735,12 +797,11 @@ export function createTalkController(options: {
     notificationAbort = undefined;
     notification = undefined;
     stopReceive();
-    sessionKey = key;
     authority += 1;
     view += 1;
     readAbort?.abort();
     readAbort = undefined;
-    for (const entry of conversations.values()) entry.sendAbort?.abort();
+    for (const entry of conversations.values()) { entry.sendAbort?.abort(); entry.messageActions?.dispose(); }
     conversations.clear();
     selected = undefined;
     loading = false;
@@ -760,7 +821,7 @@ export function createTalkController(options: {
     view += 1;
     readAbort?.abort();
     readAbort = undefined;
-    for (const entry of conversations.values()) entry.sendAbort?.abort();
+    for (const entry of conversations.values()) { entry.sendAbort?.abort(); entry.messageActions?.dispose(); }
     conversations.clear();
     selected = undefined;
     loading = false;
@@ -768,7 +829,14 @@ export function createTalkController(options: {
   }
 
   return { state, open, openNotification, retryNotification, dismissNotification, showRequests, refreshRequests, openRequest,
-    confirmRejectRequest, cancelRejectRequest, rejectRequest, loadOlder, loadGap, back, reload, setDraft, send, updateSession, foregroundChanged,
+    confirmRejectRequest, cancelRejectRequest, rejectRequest, loadOlder, loadGap, back, reload, setDraft, send, updateSession, updateActor, foregroundChanged,
+    beginMessageEdit: (id: string) => selected?.messageActions?.begin("edit", id) ?? Promise.resolve(),
+    beginMessageDelete: (id: string) => selected?.messageActions?.begin("delete", id) ?? Promise.resolve(),
+    setMessageEditContent: (value: string) => selected?.messageActions?.setContent(value),
+    saveMessageEdit: () => selected?.messageActions?.submit("edit") ?? Promise.resolve(),
+    confirmMessageDelete: () => selected?.messageActions?.submit("delete") ?? Promise.resolve(),
+    cancelMessageAction: () => selected?.messageActions?.cancel(),
+    reconcileMessageAction: () => selected?.messageActions?.reconcile() ?? Promise.resolve(),
     readVisible: () => { void refreshLatest(false); }, dispose };
 }
 

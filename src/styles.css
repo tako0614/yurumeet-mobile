@@ -1,4 +1,23 @@
 @import "@takosjp/mobile-kit/mobile-shell.css";
+.talk-attachment-picker {
+  min-width: 0;
+  max-width: 100%;
+  font: inherit;
+}
+.talk-draft-attachments {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.talk-draft-attachment {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--shell-border);
+  border-radius: 12px;
+  padding: 10px;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
 .talk-media {
   display: grid;
   gap: 10px;

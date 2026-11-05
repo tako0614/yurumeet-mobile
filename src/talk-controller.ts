@@ -2,6 +2,7 @@ import { talkSessionIdentity } from "./talk-session.ts";
 import type { TalkMessagePage, TalkRequest } from "./talk-response.ts";
 import type { TalkNotificationRequest } from "./talk-notification.ts";
 import { createTalkMessageActions, type TalkMessageActionState } from "./talk-message-actions.ts";
+import { createTalkAttachmentDraft, type TalkDraftAttachment } from "./talk-attachments.ts";
 import {
   appendUniqueMobileItemsById,
   prependUniqueMobileItemsByKey,
@@ -15,6 +16,7 @@ import {
   acknowledgeObservedTalkMessages,
   sendCommunityMessage,
   sendUserMessage,
+  uploadTalkAttachment,
   isUncertainMessageSend,
   loadTalkNotificationContact,
   loadTalkRequests,
@@ -25,6 +27,9 @@ import {
 } from "./api.ts";
 
 export interface TalkState {
+  readonly attachments: readonly TalkDraftAttachment[];
+  readonly attachmentError: string;
+  readonly canAddAttachments: boolean;
   readonly messageAction?: TalkMessageActionState;
   readonly canManageMessages: boolean;
   readonly requests?: {
@@ -54,6 +59,7 @@ export interface TalkState {
 }
 
 interface Conversation {
+  attachments?: ReturnType<typeof createTalkAttachmentDraft>;
   messageActions?: ReturnType<typeof createTalkMessageActions>;
   contact: TalkContact;
   messages: readonly TalkMessage[];
@@ -116,6 +122,9 @@ export function createTalkController(options: {
 
   function state(): TalkState {
     return {
+      attachments: selected?.attachments?.state().items ?? [],
+      attachmentError: selected?.attachments?.state().error ?? "",
+      canAddAttachments: active(authority) && !!actorApId && !!selected && !loading && !selected.messageActions?.state() && selected.attachments?.state().canAdd === true,
       messageAction: selected?.messageActions?.state(),
       canManageMessages: active(authority) && !!actorApId && !!selected && !loading && !loadingOlder &&
         !selected.sending && !selected.uncertain && !selected.messageActions?.state(),
@@ -136,15 +145,19 @@ export function createTalkController(options: {
       historyError: selected?.historyError ?? "",
       sending: selected?.sending ?? false,
       uncertain: selected?.uncertain ?? false,
-      canSend: active(authority) && !!selected && !selected.uncertain && canSubmitMobileText({
-        value: selected.content, disabled: loading || selected.sending || !!selected.messageActions?.state(), maxLength: 2000,
-      }),
+      canSend: canSend(selected),
       error: selected?.sendError || selected?.readError || "",
     };
   }
 
   function publish() {
     if (active(authority)) options.onChange?.(state());
+  }
+
+  function canSend(entry: Conversation | undefined): boolean {
+    const draft = entry?.attachments?.snapshot();
+    return active(authority) && !!entry && !!draft && !loading && !entry.sending && !entry.uncertain && !entry.messageActions?.state() &&
+      (canSubmitMobileText({ value: entry.content, maxLength: 2000 }) || (!entry.content.trim() && draft.attachments.length > 0));
   }
 
   function active(expected: number) {
@@ -472,6 +485,11 @@ export function createTalkController(options: {
       };
       conversations.set(key, entry);
       const owned = entry, expected = authority;
+      entry.attachments = createTalkAttachmentDraft({
+        active: () => !disposed && authority === expected && conversations.get(key) === owned,
+        upload: (file, signal) => uploadTalkAttachment(session, file, signal),
+        onChange: publish,
+      });
       entry.messageActions = createTalkMessageActions({
         contact: { type: owned.contact.type, ap_id: owned.contact.ap_id },
         session: () => session, actor: () => actorApId,
@@ -710,6 +728,14 @@ export function createTalkController(options: {
     publish();
   }
 
+  function captureAttachmentSelection() {
+    const entry = selected, expected = authority, incarnation = view;
+    return (files: readonly File[]): boolean => {
+      if (!entry || !current(expected, incarnation, entry) || !state().canAddAttachments) return false;
+      entry.attachments?.add(files); return true;
+    };
+  }
+
   function reload() {
     if (selected?.messageActions?.state()?.pending) return Promise.resolve();
     return selected ? open(selected.contact, returnToRequests) : Promise.resolve();
@@ -717,9 +743,9 @@ export function createTalkController(options: {
 
   async function send() {
     const entry = selected;
-    if (!active(authority) || !entry || entry.uncertain || entry.messageActions?.state() || !canSubmitMobileText({
-      value: entry.content, disabled: loading || entry.sending, maxLength: 2000,
-    })) return;
+    if (!entry || !canSend(entry)) { publish(); return; }
+    const draft = entry.attachments?.snapshot();
+    if (!draft) { publish(); return; }
     const expected = authority;
     const requestSession = session;
     const contact = entry.contact;
@@ -733,13 +759,14 @@ export function createTalkController(options: {
     let accepted = false;
     try {
       const message = contact.type === "community"
-        ? await sendCommunityMessage(requestSession, contact.ap_id, content, abort.signal)
-        : await sendUserMessage(requestSession, contact.ap_id, content, abort.signal);
+        ? await sendCommunityMessage(requestSession, contact.ap_id, content, abort.signal, draft.attachments, actorApId)
+        : await sendUserMessage(requestSession, contact.ap_id, content, abort.signal, draft.attachments, actorApId);
       if (!active(expected)) return;
       accepted = true;
       entry.confirmed.set(message.id, message);
       entry.messages = appendUniqueMobileItemsById(entry.messages, [message]);
       entry.sendOutcome += 1;
+      entry.attachments?.commit(draft.ids);
       if (entry.draftRevision === revision) {
         entry.content = "";
         entry.draftRevision += 1;
@@ -802,7 +829,7 @@ export function createTalkController(options: {
     view += 1;
     readAbort?.abort();
     readAbort = undefined;
-    for (const entry of conversations.values()) { entry.sendAbort?.abort(); entry.messageActions?.dispose(); }
+    for (const entry of conversations.values()) { entry.sendAbort?.abort(); entry.messageActions?.dispose(); entry.attachments?.dispose(); }
     conversations.clear();
     selected = undefined;
     loading = false;
@@ -822,7 +849,7 @@ export function createTalkController(options: {
     view += 1;
     readAbort?.abort();
     readAbort = undefined;
-    for (const entry of conversations.values()) { entry.sendAbort?.abort(); entry.messageActions?.dispose(); }
+    for (const entry of conversations.values()) { entry.sendAbort?.abort(); entry.messageActions?.dispose(); entry.attachments?.dispose(); }
     conversations.clear();
     selected = undefined;
     loading = false;
@@ -831,6 +858,10 @@ export function createTalkController(options: {
 
   return { state, open, openNotification, retryNotification, dismissNotification, showRequests, refreshRequests, openRequest,
     confirmRejectRequest, cancelRejectRequest, rejectRequest, loadOlder, loadGap, back, reload, setDraft, send, updateSession, updateActor, foregroundChanged,
+    addAttachments: (files: readonly File[]) => { if (state().canAddAttachments) selected?.attachments?.add(files); },
+    captureAttachmentSelection,
+    retryAttachment: (id: number) => selected?.attachments?.retry(id),
+    removeAttachment: (id: number) => selected?.attachments?.remove(id),
     beginMessageEdit: (id: string) => selected?.messageActions?.begin("edit", id) ?? Promise.resolve(),
     beginMessageDelete: (id: string) => selected?.messageActions?.begin("delete", id) ?? Promise.resolve(),
     setMessageEditContent: (value: string) => selected?.messageActions?.setContent(value),

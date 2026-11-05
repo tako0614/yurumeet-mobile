@@ -20,7 +20,7 @@ not open authenticated routes in an external browser either.
 
 Talk responses are validated before display. An invalid response shows an error instead of an empty conversation;
 use the talk refresh action to read it again. An unknown send result (a disconnected request, malformed successful
-response, or HTTP 408/5xx) retains the draft and blocks further sends until a successful conversation refresh.
+response, a non-followed redirect, or HTTP 408/5xx) retains the draft and blocks further sends until a successful conversation refresh.
 A failed refresh keeps sends blocked; a successful refresh never resends automatically. Edits made while reading
 or sending are preserved. This does not provide server-side deduplication: inspect the conversation before
 deciding to send again.
@@ -33,6 +33,16 @@ use ordinary WebView media elements rather than native HTTP authority, omit cros
 referrers, and follow browser CORS and OS codec support. Loading and decoding failures offer an explicit retry.
 Refreshing unchanged messages keeps opened media. Leaving the conversation, hiding the app or changing accounts cancels reads and revokes temporary blob URLs.
 The server still decides media access. OS codec support and native distribution require separate validation.
+
+Choose up to eight supported files through the photo/video field. The app prepares them through the selected
+host's existing multipart media upload API, and can send an attachment-only message. Queued, failed or
+unconfirmed uploads block sending; retry or remove a file explicitly. Upload acknowledgments must match
+the selected format and canonical media identity and include a valid future expiry; expired files require preparation again.
+Attachment-message ACKs bind the submitted author, text and attachments. Files and text added during a send survive
+as the next draft. An unknown send result retains the attachments and uses the existing explicit conversation
+readback fence, without automatic resend. Drafts/uploads belong to their original conversation and survive
+Back; account changes or sign-out cancel and discard them. Removing a draft attachment does not physically
+delete settled media; the host's existing staged-media lifetime owns unreferenced upload collection.
 
 API requests have a 15-second budget including the response body. Leaving a conversation cancels its read while
 retaining its pending send and draft. Sign-out or a change of credentials or API destination retires prior reads,

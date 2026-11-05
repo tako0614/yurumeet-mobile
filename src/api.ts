@@ -9,6 +9,8 @@ import {
   type MobileSession,
   type WireDecoder,
 } from "@takosjp/mobile-kit";
+import type { ClientOptions } from "@tauri-apps/plugin-http";
+import { talkUploadResponse, type TalkMessageAttachment } from "./talk-attachments.ts";
 import {
   CONTACTS_RESPONSE,
   CURRENT_ACTOR_RESPONSE,
@@ -29,7 +31,7 @@ import {
   ownedGroupMessageResponse,
   ownedGroupEditResponse,
   ownedGroupDeleteResponse,
-  SENT_MESSAGE_RESPONSE,
+  sentMessageResponse,
   type TalkActor,
   type TalkContact,
   type TalkMessage,
@@ -139,7 +141,9 @@ export class YurumeetResponseError extends Error {
 /** Preserve genuine HTTP status/detail while classifying an ambiguous send. */
 export function isUncertainMessageSend(cause: unknown): boolean {
   return (cause instanceof YurumeetResponseError && cause.uncertainSend) ||
-    (cause instanceof MobileApiError && (cause.status >= 500 || cause.status === 408));
+    // A no-follow redirect can arrive after a committed POST. Only definite
+    // client rejections (apart from request timeout) acknowledge no success.
+    (cause instanceof MobileApiError && !(cause.status >= 400 && cause.status < 500 && cause.status !== 408));
 }
 
 async function response<T>(
@@ -163,9 +167,10 @@ async function response<T>(
   )), 15_000);
   try {
     if (owned.signal.aborted) throw owned.signal.reason;
-    const value = await createMobileApiClient({ session: selected }).wire(path, decoder, {
-      ...init, signal: owned.signal, credentials: "omit", redirect: "error", cache: "no-store",
-    });
+    const request: RequestInit & Pick<ClientOptions, "maxRedirections"> = {
+      ...init, signal: owned.signal, credentials: "omit", redirect: "error", maxRedirections: 0, cache: "no-store", referrerPolicy: "no-referrer",
+    };
+    const value = await createMobileApiClient({ session: selected }).wire(path, decoder, request);
     if (owned.signal.aborted) throw owned.signal.reason;
     return value;
   } catch (cause) {
@@ -304,15 +309,17 @@ export async function sendUserMessage(
   actorApId: string,
   content: string,
   signal?: AbortSignal,
+  attachments: readonly TalkMessageAttachment[] = [],
+  expectedSender?: string,
 ): Promise<TalkMessage> {
   return response(
     session,
     `/api/dm/user/${encodeURIComponent(actorApId)}/messages`,
-    SENT_MESSAGE_RESPONSE,
+    sentMessageResponse(content, attachments, expectedSender),
     {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, ...(attachments.length ? { attachments } : {}) }),
       signal,
     },
     true,
@@ -337,19 +344,26 @@ export async function sendCommunityMessage(
   communityApId: string,
   content: string,
   signal?: AbortSignal,
+  attachments: readonly TalkMessageAttachment[] = [],
+  expectedSender?: string,
 ): Promise<TalkMessage> {
   return response(
     session,
     `/api/communities/${encodeURIComponent(communityApId)}/messages`,
-    SENT_MESSAGE_RESPONSE,
+    sentMessageResponse(content, attachments, expectedSender),
     {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, ...(attachments.length ? { attachments } : {}) }),
       signal,
     },
     true,
   );
+}
+
+export async function uploadTalkAttachment(session: MobileSession, file: File, signal: AbortSignal) {
+  const body = new FormData(); body.set("file", file);
+  return response(session, "/api/media/upload", talkUploadResponse(file), { method: "POST", body, signal });
 }
 
 export async function markTalkAsRead(

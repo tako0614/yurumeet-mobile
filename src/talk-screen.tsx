@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, createUniqueId, For, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, createUniqueId, For, Index, onCleanup, onMount, Show } from "solid-js";
 import {
   formatMobilePreviewDate,
   mobileTextRemaining,
@@ -155,7 +155,10 @@ export function TalkScreen(props: {
   onNotificationConsumed?: (request: TalkNotificationRequest) => void;
 }) {
   const [foreground, setForeground] = createSignal(document.visibilityState !== "hidden");
+  const [fileSelectionError, setFileSelectionError] = createSignal("");
+  let acceptFiles: ((files: readonly File[]) => boolean) | undefined;
   const [state, setState] = createSignal<TalkState>({
+    attachments: [], attachmentError: "", canAddAttachments: false,
     messages: [], content: "", loading: false, loadingOlder: false, refreshing: false, gaps: [], hasMore: undefined, historyError: "",
     sending: false, uncertain: false, canSend: false, canManageMessages: false, error: "",
   });
@@ -440,6 +443,37 @@ export function TalkScreen(props: {
                     onInput={(event) => controller.setDraft(event.currentTarget.value)}
                   />
                 </MobileComposeField>
+                <MobileComposeField label="写真・動画">
+                  <input class="talk-attachment-picker" type="file" multiple
+                    accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/webm"
+                    disabled={!state().canAddAttachments}
+                    onClick={() => { setFileSelectionError(""); acceptFiles = controller.captureAttachmentSelection(); }}
+                    onCancel={() => { acceptFiles = undefined; }}
+                    onChange={event => {
+                      const files = Array.from(event.currentTarget.files ?? []), accept = acceptFiles ?? controller.captureAttachmentSelection();
+                      event.currentTarget.value = ""; acceptFiles = undefined;
+                      if (!accept(files)) setFileSelectionError("接続先や会話が変わりました。写真・動画をもう一度選んでください。");
+                    }} />
+                </MobileComposeField>
+                <Show when={fileSelectionError()}>{error => <p class="talk-error" role="alert">{error()}</p>}</Show>
+                <Show when={state().attachmentError}>{error => <p class="talk-error" role="alert">{error()}</p>}</Show>
+                <Show when={state().attachments.length}>
+                  <div class="talk-draft-attachments" role="list" aria-label="送信前の添付">
+                    <Index each={state().attachments}>{item => <div class="talk-draft-attachment" role="listitem">
+                      <strong>{item().name}</strong>
+                      <small>{(item().size / (1024 * 1024)).toFixed(1)} MiB · {item().phase === "ready" ? "準備できました" : item().phase === "queued" ? "準備を待っています" : item().phase === "uploading" ? "添付を準備中…" : "確認が必要です"}</small>
+                      <Show when={item().error}>{error => <p class="talk-error" role="alert">{error()}</p>}</Show>
+                      <Show when={item().phase === "ready" && item().attachment}>
+                        {attachment => <TalkMedia attachments={[attachment()]} session={props.session} isActive={() => props.isActive?.() !== false && foreground()} />}
+                      </Show>
+                      <div class="message-action-buttons">
+                        <Show when={item().canRetry}><button type="button" class="text-button" onClick={() => controller.retryAttachment(item().id)}>添付を再試行</button></Show>
+                        <button type="button" class="text-button" onClick={() => controller.removeAttachment(item().id)}>下書きから外す</button>
+                      </div>
+                    </div>}</Index>
+                  </div>
+                </Show>
+                <Show when={sending()}><p role="status">送信中の内容は変わりません。追加入力は次の下書きに残ります。</p></Show>
                 <MobileComposeFooter
                   detail={`あと ${mobileTextRemaining(content(), 2000)} 文字`}
                 >

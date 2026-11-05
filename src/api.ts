@@ -28,6 +28,7 @@ import {
   isGroupMessageRevision,
   ownedGroupMessageResponse,
   ownedGroupEditResponse,
+  ownedGroupDeleteResponse,
   SENT_MESSAGE_RESPONSE,
   type TalkActor,
   type TalkContact,
@@ -87,6 +88,12 @@ export async function editOwnedGroupTalkMessage(session: MobileSession, communit
   return response(session, path, ownedGroupEditResponse(id, content, communityApId), { method: "PATCH", headers: {
     "content-type": "application/json", "if-match": JSON.stringify(revision),
   }, body: JSON.stringify({ content }), signal }, true);
+}
+
+export async function deleteOwnedGroupTalkMessage(session: MobileSession, communityApId: string, id: string, revision: string, signal?: AbortSignal) {
+  const path = ownedGroupTalkPath(communityApId, id);
+  if (!isGroupMessageRevision(revision)) throw new Error("メッセージの現在の状態を確認してください。");
+  return response(session, path, ownedGroupDeleteResponse(id, communityApId), { method: "DELETE", headers: { "if-match": JSON.stringify(revision) }, signal }, true);
 }
 
 export async function loadTalkRequests(session: MobileSession, signal?: AbortSignal): Promise<TalkRequest[]> {

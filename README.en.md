@@ -36,8 +36,11 @@ for older loaded messages outside the latest page; an unsupported host404 is not
 sessions retires prior work, while changing conversations preserves that conversation's draft and pending result.
 DM actions require the host's owned-DM reader. Own group messages also expose edit through the community-specific
 single-message reader and group revision. Current read access and authorship remain required. Unsupported hosts or
-revoked access require explicit rechecking; a generic404 never removes the message. Group deletion and editing
-another author's messages are not offered.
+revoked access require explicit rechecking; a generic404 never removes the message. Actions on another author's
+messages are not offered. Own Group messages also expose a confirmation-based Delete. The single-message GET
+must advertise the exact conditional-delete contract before any DELETE; an older editing-only host is refused.
+Cancellation performs no write, conflicts require fresh content and another explicit confirmation, and an unknown
+ACK is reconciled through supported per-message absence without an automatic resend.
 Read receipts pause during message actions and confirmation dialogs so hidden messages remain unread.
 For DMs the server co-commits local changes with explicit-recipient delivery intent, without follower fanout.
 Group edits update community chat state and use existing receive-refresh behavior; they add no external delivery contract. Remote arrival

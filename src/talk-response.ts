@@ -80,13 +80,25 @@ export function isGroupMessageRevision(value: unknown): value is string {
   return typeof value === "string" && /^group-message-v1:[a-f0-9]{64}$/.test(value);
 }
 
-export function ownedGroupMessageResponse(id: string, actorApId: string, communityApId: string): WireDecoder<{ message: TalkMessage; revision: string }> {
+export function ownedGroupMessageResponse(id: string, actorApId: string, communityApId: string): WireDecoder<{ message: TalkMessage; revision: string; conditionalDelete: boolean }> {
   return { document: "Yurumeet owned group message", decode(value) {
     const data = record(value, "response"), parsed = message(data.message, "message");
     if (data.community_ap_id !== communityApId || parsed.id !== id || parsed.sender.ap_id !== actorApId || !isGroupMessageRevision(data.revision)) {
       throw new Error("Owned group message does not match the selected community, author and message");
     }
-    return { message: parsed, revision: data.revision };
+    const actions = data.message_actions;
+    const deletion = actions && typeof actions === "object" && !Array.isArray(actions)
+      ? (actions as Record<string, unknown>).delete : undefined;
+    const supported = !!deletion && typeof deletion === "object" && !Array.isArray(deletion) &&
+      (deletion as Record<string, unknown>).version === 1 && (deletion as Record<string, unknown>).precondition === "group-message-v1";
+    return { message: parsed, revision: data.revision, conditionalDelete: supported };
+  } };
+}
+
+export function ownedGroupDeleteResponse(id: string, communityApId: string): WireDecoder<void> {
+  return { document: "Yurumeet owned group delete", decode(value) {
+    const data = record(value, "response");
+    if (data.success !== true || data.community_ap_id !== communityApId || data.message_id !== id) throw new Error("Group deletion was not acknowledged for the selected message");
   } };
 }
 

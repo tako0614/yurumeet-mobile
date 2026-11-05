@@ -399,9 +399,7 @@ export function TalkScreen(props: {
                         <Show when={message.sender.ap_id === props.home?.actor.ap_id}>
                           <div class="message-action-buttons">
                             <button type="button" class="text-button" disabled={!state().canManageMessages} onClick={() => void controller.beginMessageEdit(message.id)}>編集</button>
-                            <Show when={contact().type === "user"}>
-                              <button type="button" class="text-button" disabled={!state().canManageMessages} onClick={() => void controller.beginMessageDelete(message.id)}>削除…</button>
-                            </Show>
+                            <button type="button" class="text-button" disabled={!state().canManageMessages} onClick={() => void controller.beginMessageDelete(message.id)}>削除…</button>
                           </div>
                         </Show>
                       </MobilePreviewCard>

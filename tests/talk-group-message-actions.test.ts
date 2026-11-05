@@ -118,10 +118,11 @@ test("a delayed Group write ACK remains in its conversation and cannot cross an 
 
 test("Group actions cannot edit another author or invoke the DM-only delete endpoint", async () => {
   const t = transport(), c = subject(); await c.open(group);
-  await c.beginMessageDelete(mine.id); expect(c.state().messageAction).toBeUndefined();
+  await c.beginMessageDelete(mine.id); expect(c.state().messageAction?.canSave).toBe(false);
+  expect(c.state().messageAction?.error).toContain("安全なグループ削除"); c.cancelMessageAction();
   t.setCurrent("Another author's body", session.hostUrl + "/ap/users/other"); c.foregroundChanged(); await Bun.sleep(0);
   await c.beginMessageEdit(mine.id); expect(c.state().messageAction).toBeUndefined();
-  expect(t.calls.filter(x => x.path === path)).toHaveLength(0);
+  expect(t.calls.filter(x => x.method === "DELETE")).toHaveLength(0);
 });
 
 test("a definitive Group edit denial leaves the text recoverable and lets the user close the editor", async () => {

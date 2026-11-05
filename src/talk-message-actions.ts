@@ -1,5 +1,5 @@
 import { MobileApiError, type MobileSession } from "@takosjp/mobile-kit";
-import { loadOwnedTalkMessage, editOwnedTalkMessage, deleteOwnedTalkMessage, loadOwnedGroupTalkMessage, editOwnedGroupTalkMessage, type TalkMessage, type TalkContact } from "./api.ts";
+import { loadOwnedTalkMessage, editOwnedTalkMessage, deleteOwnedTalkMessage, loadOwnedGroupTalkMessage, editOwnedGroupTalkMessage, deleteOwnedGroupTalkMessage, type TalkMessage, type TalkContact } from "./api.ts";
 
 export interface TalkMessageActionState {
   readonly id: string;
@@ -91,6 +91,11 @@ export function createTalkMessageActions(options: {
         else { item.unavailable = true; item.revision = undefined; item.submitted = undefined;
           item.error = "このメッセージは現在利用できません。編集中の本文は残しています。"; }
       } else {
+        if (item.kind === "delete" && options.contact.type === "community" && !("conditionalDelete" in found && found.conditionalDelete)) {
+          item.needsReadback = true; item.revision = undefined;
+          item.error = "このサーバーは安全なグループ削除に対応していません。サーバーの更新が必要です。";
+          return;
+        }
         options.adopt(found.message);
         item.revision = found.revision; item.serverContent = found.message.content ?? ""; item.unavailable = false;
         if (initial && item.draftRevision === draft) item.content = item.serverContent;
@@ -111,8 +116,7 @@ export function createTalkMessageActions(options: {
 
   async function begin(kind: Action["kind"], id: string) {
     const actor = options.actor(), message = options.message(id);
-    if (!active() || !options.isCurrent() || !actor || message?.sender.ap_id !== actor || action || writeAbort ||
-      (kind === "delete" && options.contact.type !== "user")) return;
+    if (!active() || !options.isCurrent() || !actor || message?.sender.ap_id !== actor || action || writeAbort) return;
     action = { id, actor, kind, content: message.content ?? "", serverContent: message.content ?? "", draftRevision: 0,
       loading: false, pending: false, needsReadback: true, unavailable: false, error: "" };
     await read(true);
@@ -147,7 +151,8 @@ export function createTalkMessageActions(options: {
         if (item.draftRevision === item.submitted.draftRevision) action = undefined;
         else item.submitted = undefined;
       } else {
-        await deleteOwnedTalkMessage(session, item.id, revision, abort.signal);
+        if (options.contact.type === "community") await deleteOwnedGroupTalkMessage(session, options.contact.ap_id, item.id, revision, abort.signal);
+        else await deleteOwnedTalkMessage(session, item.id, revision, abort.signal);
         if (!owns(item)) return;
         options.remove(item.id); action = undefined;
       }

@@ -104,31 +104,50 @@ async function response<T>(
 
 export async function loadHome(
   session: MobileSession,
+  signal?: AbortSignal,
 ): Promise<YurumeetMobileHome> {
-  const [me, contacts] = await Promise.all([
-    response(
-      session,
-      session.productEndpoints?.currentUser ?? "/api/auth/me",
-      CURRENT_ACTOR_RESPONSE,
-    ),
-    response(
-      session,
-      session.productEndpoints?.conversations ?? "/api/dm/contacts",
-      CONTACTS_RESPONSE,
-    ),
-  ]);
-  const all = [
-    ...contacts.mutual_followers,
-    ...contacts.communities,
-  ].sort((a, b) =>
-    (b.last_message_at ?? "").localeCompare(a.last_message_at ?? ""),
-  );
-  return {
-    actor: me.actor,
-    contacts: all,
-    requestCount: contacts.request_count,
-    unread: all.reduce((sum, item) => sum + item.unread_count, 0),
+  const selected = {
+    ...session,
+    productEndpoints: session.productEndpoints ? { ...session.productEndpoints } : undefined,
   };
+  const read = new AbortController();
+  const cancel = () => read.abort(signal?.reason);
+  signal?.addEventListener("abort", cancel, { once: true });
+  if (signal?.aborted) cancel();
+  try {
+    if (read.signal.aborted) throw read.signal.reason;
+    const [me, contacts] = await Promise.all([
+      response(
+        selected,
+        selected.productEndpoints?.currentUser ?? "/api/auth/me",
+        CURRENT_ACTOR_RESPONSE,
+        { signal: read.signal },
+      ),
+      response(
+        selected,
+        selected.productEndpoints?.conversations ?? "/api/dm/contacts",
+        CONTACTS_RESPONSE,
+        { signal: read.signal },
+      ),
+    ]);
+    if (read.signal.aborted) throw read.signal.reason;
+    const all = [
+      ...contacts.mutual_followers,
+      ...contacts.communities,
+    ].sort((a, b) =>
+      (b.last_message_at ?? "").localeCompare(a.last_message_at ?? ""),
+    );
+    return {
+      actor: me.actor,
+      contacts: all,
+      requestCount: contacts.request_count,
+      unread: all.reduce((sum, item) => sum + item.unread_count, 0),
+    };
+  } finally {
+    signal?.removeEventListener("abort", cancel);
+    // A failed half of the home read must close its unfinished sibling too.
+    read.abort();
+  }
 }
 
 export async function loadUserMessages(

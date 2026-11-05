@@ -113,7 +113,7 @@ test("overlapping refresh callers settle to the latest serialized snapshot", asy
   unmount();
 });
 
-test("token replacement clears home immediately and retries stale work with current credentials", async () => {
+test("token replacement clears home and retires callers using old credentials", async () => {
   const oldRequest = deferred<YurumeetMobileHome>();
   const newRequest = deferred<YurumeetMobileHome>();
   const newCredentialStarted = deferred<void>();
@@ -129,19 +129,19 @@ test("token replacement clears home immediately and retries stale work with curr
   });
   const unmount = loader.mount({ session, home: home("Previous") }, (snapshot) => snapshots.push(snapshot));
   const staleCaller = loader.load(session);
+  const staleResult = staleCaller.catch((cause: unknown) => cause);
   await microtask();
   const replacement = { ...session, accessToken: "token-two" };
   const currentCaller = loader.load(replacement);
 
   expect(snapshots.at(-1)).toEqual({ session: replacement, home: undefined });
-  expect(requests.map(({ token }) => token)).toEqual(["token-one"]);
-  oldRequest.resolve(home("Old credential result"));
   await newCredentialStarted.promise;
   expect(requests.map(({ token }) => token)).toEqual(["token-one", "token-two"]);
+  oldRequest.resolve(home("Old credential result"));
   newRequest.resolve(home("New credential result"));
 
-  const [staleResult, currentResult] = await Promise.all([staleCaller, currentCaller]);
-  expect(staleResult).toEqual(home("New credential result"));
+  const currentResult = await currentCaller;
+  expect(await staleResult).toBeInstanceOf(Error);
   expect(currentResult).toEqual(home("New credential result"));
   expect(snapshots.at(-1)).toEqual({ session: replacement, home: home("New credential result") });
   expect(snapshots.some((snapshot) => snapshot.home?.actor.name === "Old credential result")).toBe(false);
@@ -165,6 +165,7 @@ test("changing product endpoints invalidates an otherwise identical session", as
   });
   const unmount = loader.mount({ session: routedSession, home: home("Old route") }, (snapshot) => snapshots.push(snapshot));
   const staleCaller = loader.load(routedSession);
+  const staleResult = staleCaller.catch((cause: unknown) => cause);
   await microtask();
   const nextRouteSession = { ...routedSession, productEndpoints: { conversations: "/new/contacts" } };
   const currentCaller = loader.load(nextRouteSession);
@@ -173,7 +174,7 @@ test("changing product endpoints invalidates an otherwise identical session", as
   oldRequest.resolve(home("Old route response"));
   await newRouteStarted.promise;
   newRequest.resolve(home("New route response"));
-  await expect(staleCaller).resolves.toEqual(home("New route response"));
+  expect(await staleResult).toBeInstanceOf(Error);
   await expect(currentCaller).resolves.toEqual(home("New route response"));
   unmount();
 });
@@ -246,4 +247,72 @@ test("a current load failure clears the current home snapshot", async () => {
   await expect(loading).rejects.toThrow("connection lost");
   expect(snapshots.at(-1)).toEqual({ session, home: undefined });
   unmount();
+});
+
+test("a changed identity starts its read without waiting for a retired body", async () => {
+  const oldRequest = deferred<YurumeetMobileHome>();
+  const newRequest = deferred<YurumeetMobileHome>();
+  const reads: Array<{ token: string; signal?: AbortSignal }> = [];
+  const snapshots: Array<{ session: MobileSession; home?: YurumeetMobileHome }> = [];
+  const loader = createTalkHomeLoader({
+    loadHome: (current, signal) => {
+      reads.push({ token: current.accessToken, signal });
+      // Even a late adapter that ignores cancellation must not hold the new
+      // identity's read or later clear its pending work.
+      return current.accessToken === session.accessToken ? oldRequest.promise : newRequest.promise;
+    },
+  });
+  const release = loader.mount({ session }, (value) => snapshots.push(value));
+  const oldCaller = loader.load(session);
+  const oldResult = oldCaller.catch((cause: unknown) => cause);
+  await microtask();
+  const replacement = { ...session, accessToken: "replacement-token" };
+  const newCaller = loader.load(replacement);
+  await microtask();
+  const observed = { tokens: reads.map((read) => read.token), canceled: reads[0]?.signal?.aborted };
+  try {
+    expect(observed).toEqual({ tokens: [session.accessToken, replacement.accessToken], canceled: true });
+    expect(newCaller).not.toBe(oldCaller);
+    // Settle the retired promise while the new read is still pending: its
+    // finally must not clear the current read and start a duplicate request.
+    oldRequest.resolve(home("Retired"));
+    expect(await oldResult).toBeInstanceOf(Error);
+    const overlap = loader.load(replacement);
+    expect(overlap).toBe(newCaller);
+    newRequest.resolve(home("Current"));
+    expect(await newCaller).toEqual(home("Current"));
+    await overlap;
+    expect(reads).toHaveLength(3); // one latest same-identity refresh after the overlap
+    expect(snapshots.some((value) => value.home?.actor.name === "Retired")).toBe(false);
+  } finally {
+    oldRequest.resolve(home("Retired"));
+    newRequest.resolve(home("Current"));
+    await Promise.allSettled([oldCaller, newCaller]);
+    release();
+  }
+});
+
+test("unmount cancels the pending read and a new mount starts independently", async () => {
+  const requests: Array<{ signal?: AbortSignal; request: Deferred<YurumeetMobileHome> }> = [];
+  const loader = createTalkHomeLoader({
+    loadHome: (_current, signal) => {
+      const request = deferred<YurumeetMobileHome>();
+      requests.push({ signal, request });
+      return request.promise;
+    },
+  });
+  const releaseOld = loader.mount({ session }, () => {});
+  const old = loader.load(session).catch((cause: unknown) => cause);
+  await microtask();
+  releaseOld();
+  const canceled = requests[0]?.signal?.aborted;
+  const releaseNew = loader.mount({ session }, () => {});
+  const current = loader.load(session);
+  await microtask();
+  requests[1]!.request.resolve(home("Current"));
+  await current;
+  requests[0]!.request.resolve(home("Retired"));
+  expect(await old).toBeInstanceOf(Error);
+  expect(canceled).toBe(true);
+  releaseNew();
 });

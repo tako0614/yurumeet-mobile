@@ -1,5 +1,5 @@
 import { batch, createRoot, createSignal, getOwner, onCleanup, type JSX } from "solid-js";
-import type { NativeBridge } from "@takosjp/mobile-kit";
+import type { NativeBridge, MobileSession } from "@takosjp/mobile-kit";
 import {
   type MobileClientAppProps,
   type MobileShellHomeExtraContext,
@@ -14,6 +14,8 @@ import {
 import { productAdapter } from "./product.ts";
 import { HostRouteNoticeBanner, TalkScreen } from "./talk-screen.tsx";
 import { createTalkHomeLoader } from "./talk-home-loader.ts";
+import { talkNotificationRequest, type TalkNotificationRequest } from "./talk-notification.ts";
+import { talkSessionIdentity } from "./talk-session.ts";
 import { createHostRouteHandoff, type HostRouteNotice } from "./host-route.ts";
 
 const metrics = [
@@ -26,6 +28,13 @@ export function createYurumeetMobileApp(
   createNativeBridge: () => NativeBridge,
 ): MobileClientAppProps<YurumeetMobileHome> {
   const loader = createTalkHomeLoader({ loadHome });
+  const [notification, setNotification] = createSignal<TalkNotificationRequest>();
+  function resetNotifications() { setNotification(undefined); }
+  function loadSelectedHome(session: MobileSession) {
+    const key = talkSessionIdentity(session);
+    setNotification(current => current?.sessionKey === key ? current : undefined);
+    return loader.load(session);
+  }
   // Route links (`yurume://open?path=…` / `?url=…`) open on the talk screen; a
   // route without a native screen is reported here instead of a browser.
   const [routeNotice, setRouteNotice] = createSignal<HostRouteNotice>();
@@ -60,6 +69,8 @@ export function createYurumeetMobileApp(
           session={session()}
           refreshHome={context.refreshHome}
           isActive={context.isActive}
+          notificationRequest={notification()}
+          onNotificationConsumed={(request) => setNotification(current => current === request ? undefined : current)}
         />
       </>
     );
@@ -72,6 +83,8 @@ export function createYurumeetMobileApp(
     const owner = getOwner();
     if (!owner) throw new Error("トーク画面の表示先を確認できませんでした。");
     if (view && view.owner !== owner) {
+      const key = talkSessionIdentity(context.session);
+      setNotification(current => current?.sessionKey === key ? current : undefined);
       view.active = false;
       view.dispose();
       view = undefined;
@@ -98,7 +111,7 @@ export function createYurumeetMobileApp(
       queueMicrotask(() => {
         if (current.active || current.revision !== revision) return;
         current.dispose();
-        if (view === current) view = undefined;
+        if (view === current) { view = undefined; resetNotifications(); }
       });
     });
     return current.element;
@@ -107,13 +120,19 @@ export function createYurumeetMobileApp(
   return {
     adapter: productAdapter,
     createNativeBridge,
-    loadHome: loader.load,
+    loadHome: loadSelectedHome,
     registerPush,
     unregisterPush,
     openHostRoute,
-    // A tapped notification opens the talk screen, as before. It does not go
-    // through the host route handoff.
-    handlePushNotification: (input) => input.kind === "tapped",
+    // A push is only a session-bound hint. The foreground view resolves the
+    // event using its authenticated actor before opening a native chat.
+    handlePushNotification: (input) => {
+      if (input.kind !== "tapped") return false;
+      // The kit invokes this callback only for its current session/epoch.
+      // A cold tap can precede that session's first home read or view mount.
+      setNotification(talkNotificationRequest(input));
+      return true;
+    },
     sessionUnlock: {
       restoreMode: "if-available",
       prompt: {

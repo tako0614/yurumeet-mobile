@@ -23,7 +23,16 @@ use the talk refresh action to read it again. An unknown send result (a disconne
 response, or HTTP 408/5xx) retains the draft and blocks further sends until a successful conversation refresh.
 A failed refresh keeps sends blocked; a successful refresh never resends automatically. Edits made while reading
 or sending are preserved. This does not provide server-side deduplication: inspect the conversation before
-deciding to send again. Attachment-only messages show an attachment count.
+deciding to send again.
+
+DM and group attachments open inside the app through explicit image/video buttons. JPEG/PNG/GIF/WebP and
+MP4/WebM are supported; other formats remain visibly unavailable. Reads are lazy. Only the selected server's
+canonical media route receives the current session; its reads refuse redirects and have a 15-second whole-body
+deadline with client buffering ceilings of 20 MiB for images and 40 MiB for videos. External HTTPS attachments
+use ordinary WebView media elements rather than native HTTP authority, omit cross-origin credentials and
+referrers, and follow browser CORS and OS codec support. Loading and decoding failures offer an explicit retry.
+Refreshing unchanged messages keeps opened media. Leaving the conversation, hiding the app or changing accounts cancels reads and revokes temporary blob URLs.
+The server still decides media access. OS codec support and native distribution require separate validation.
 
 API requests have a 15-second budget including the response body. Leaving a conversation cancels its read while
 retaining its pending send and draft. Sign-out or a change of credentials or API destination retires prior reads,

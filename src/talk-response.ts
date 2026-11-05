@@ -15,6 +15,36 @@ export interface TalkContact extends TalkActor {
   unread_count: number;
 }
 
+export interface TalkRequest {
+  id: string;
+  sender: TalkActor & { icon_url: string | null };
+  content: string | null;
+  created_at: string | null;
+}
+
+export const REQUESTS_RESPONSE: WireDecoder<TalkRequest[]> = {
+  document: "Yurumeet message requests",
+  decode(value) {
+    return array(record(value, "response").requests, "requests").map((value, index) => {
+      const field = `requests[${index}]`, item = record(value, field);
+      const sender = record(item.sender, `${field}.sender`);
+      const parsed = actor(sender, `${field}.sender`);
+      if (!isTalkNotificationId(item.id) || !isTalkNotificationId(parsed.ap_id)) {
+        throw new Error("Request identifiers must be bounded opaque IDs");
+      }
+      return { id: item.id, sender: { ...parsed, icon_url: nullableString(sender.icon_url, `${field}.sender.icon_url`) },
+        content: nullableString(item.content, `${field}.content`), created_at: nullableString(item.created_at, `${field}.created_at`) };
+    });
+  },
+};
+
+export const REQUEST_REJECT_RESPONSE: WireDecoder<void> = {
+  document: "Yurumeet request rejection",
+  decode(value) {
+    if (record(value, "response").success !== true) throw new Error("Request rejection was not acknowledged");
+  },
+};
+
 export function notificationTargetResponse(eventId: string, recipientApId: string): WireDecoder<{ type: TalkContact["type"]; ap_id: string }> {
   return { document: "Yurumeet notification target", decode(value) {
     const response = record(value, "response"), target = record(response.target, "target");

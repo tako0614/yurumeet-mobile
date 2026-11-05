@@ -19,15 +19,34 @@ import {
   observedReadResponse,
   notificationTargetResponse,
   notificationContactResponse,
+  REQUESTS_RESPONSE,
+  REQUEST_REJECT_RESPONSE,
   SENT_MESSAGE_RESPONSE,
   type TalkActor,
   type TalkContact,
   type TalkMessage,
   type TalkMessagePage,
+  type TalkRequest,
 } from "./talk-response.ts";
 import { isTalkNotificationId, type TalkNotificationRequest } from "./talk-notification.ts";
 
 export type { TalkContact, TalkMessage } from "./talk-response.ts";
+
+export async function loadTalkRequests(session: MobileSession, signal?: AbortSignal): Promise<TalkRequest[]> {
+  return response(session, "/api/dm/requests", REQUESTS_RESPONSE, { signal });
+}
+
+export async function loadTalkRequestContact(session: MobileSession, senderApId: string, signal?: AbortSignal): Promise<TalkContact> {
+  if (!isTalkNotificationId(senderApId)) throw new Error("相手の情報を確認できませんでした。");
+  return response(session, `/api/dm/contact/${encodeURIComponent(senderApId)}`,
+    notificationContactResponse({ type: "user", ap_id: senderApId }), { signal });
+}
+
+export async function rejectTalkRequest(session: MobileSession, senderApId: string, signal?: AbortSignal): Promise<void> {
+  if (!isTalkNotificationId(senderApId)) throw new Error("相手の情報を確認できませんでした。");
+  return response(session, "/api/dm/requests/reject-pending", REQUEST_REJECT_RESPONSE,
+    { method: "POST", body: JSON.stringify({ sender_ap_id: senderApId, block: false }), signal });
+}
 
 export interface YurumeetMobileHome {
   actor: TalkActor;

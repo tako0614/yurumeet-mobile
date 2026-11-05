@@ -10,6 +10,13 @@ iOS / Android 専用で、desktop artifact は配布しません。
 製品の Deploy to Cloudflare フローにも進めます。ログインは OIDC PKCE とホストのパスワードセッションの
 両方に対応します。
 
+トーク一覧の「新しいトーク」から、接続先が提供する名前・ユーザー名検索、または
+`@user@server` の検索で相手を探せます。結果には相手のIDも表示し、選んだ相手を接続先の
+正規contact APIで再確認してから会話を開きます。検索や選択だけではフォロー・送信をせず、
+本文を入力して「送信」を押すと既存のDM処理を使います。相手の設定や拒否はサーバーが判断します。
+検索失敗は明示的に再試行でき、別の検索・検索を閉じる・接続先や本人の変更で古い応答を破棄します。
+別サーバーの検索も現在の接続先に依頼し、nativeの認証情報を相手サーバーへ直接送りません。
+
 接続先には `client.yurume.messages.v1` capability を要求します。OIDC は PKCE 後に family host の
 session へ交換するため、provider の `offline_access` や refresh token は要求・保存しません。Takosumi から受け取る
 setup ticket は接続先を引き継ぐための未検証参照であり、認証やデプロイ完了の証明として扱いません。また、native

@@ -32,6 +32,7 @@ import {
   ownedGroupEditResponse,
   ownedGroupDeleteResponse,
   sentMessageResponse,
+  talkPeopleResponse,
   type TalkActor,
   type TalkContact,
   type TalkMessage,
@@ -106,6 +107,21 @@ export async function loadTalkRequestContact(session: MobileSession, senderApId:
   if (!isTalkNotificationId(senderApId)) throw new Error("相手の情報を確認できませんでした。");
   return response(session, `/api/dm/contact/${encodeURIComponent(senderApId)}`,
     notificationContactResponse({ type: "user", ap_id: senderApId }), { signal });
+}
+
+export async function searchTalkPeople(session: MobileSession, query: string, offset = 0, signal?: AbortSignal) {
+  const term = query.trim();
+  if (!term || term.length > 256 || /[\u0000-\u001f\u007f]/u.test(term) ||
+    !Number.isSafeInteger(offset) || offset < 0 || offset > 10_000 || offset % 20 !== 0) {
+    throw new Error("名前または @user@server を256文字以内で入力してください。");
+  }
+  const handle = term.replace(/^@/u, ""), remote = handle.includes("@");
+  if (remote && (!/^[^\s@/]+@[^\s@/]+$/u.test(handle) || offset !== 0)) {
+    throw new Error("相手のアドレスを @user@server の形で入力してください。");
+  }
+  const params = new URLSearchParams({ q: term, ...(remote ? {} : { limit: "20", offset: String(offset) }) });
+  return response(session, `/api/search/${remote ? "remote" : "actors"}?${params}`,
+    talkPeopleResponse(offset, remote), { signal });
 }
 
 export async function rejectTalkRequest(session: MobileSession, senderApId: string, signal?: AbortSignal): Promise<void> {

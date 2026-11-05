@@ -272,3 +272,49 @@ body {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
+
+.people-search {
+  padding: 1rem;
+  border: 1px solid var(--shell-border);
+  border-radius: 1rem;
+  background: var(--shell-card);
+}
+
+.people-search-heading,
+.people-search-fields {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.people-search-heading {
+  justify-content: space-between;
+}
+
+.people-search-fields input {
+  flex: 1 1 12rem;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.people-results {
+  padding: 0;
+  list-style: none;
+}
+
+.people-results .talk-row {
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.people-results .talk-copy {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.people-results .talk-copy small {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}

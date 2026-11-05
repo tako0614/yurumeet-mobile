@@ -17,6 +17,7 @@ import {
   type YurumeetMobileHome,
 } from "./api.ts";
 import { createTalkController, type TalkState } from "./talk-controller.ts";
+import { createTalkDiscoveryController, type TalkDiscoveryState } from "./talk-discovery.ts";
 import { talkSessionIdentity } from "./talk-session.ts";
 import { TalkMedia } from "./talk-media.tsx";
 import type { TalkNotificationRequest } from "./talk-notification.ts";
@@ -163,6 +164,10 @@ export function TalkScreen(props: {
     sending: false, uncertain: false, canSend: false, canManageMessages: false, error: "",
   });
   let surface!: HTMLDivElement;
+  let peopleInput: HTMLInputElement | undefined, newTalkButton: HTMLButtonElement | undefined;
+  const peopleInputId = createUniqueId();
+  const [discovery, setDiscovery] = createSignal<TalkDiscoveryState>({ visible: false, query: "", people: [],
+    searched: false, loading: false, opening: undefined, hasMore: false, error: "" });
   const controller = createTalkController({
     session: props.session,
     actorApId: props.home?.actor.ap_id,
@@ -191,7 +196,18 @@ export function TalkScreen(props: {
         !document.querySelector("dialog[open]"),
     },
   });
-  createEffect(() => { controller.updateSession(props.session); controller.updateActor(props.home?.actor.ap_id); });
+  const discoveryController = createTalkDiscoveryController({ session: props.session, actorApId: props.home?.actor.ap_id,
+    isActive: () => props.isActive?.() !== false && document.visibilityState !== "hidden",
+    onChange: setDiscovery, onOpen: contact => { void controller.open(contact); } });
+  function closeDiscovery() {
+    discoveryController.close();
+    queueMicrotask(() => { if (newTalkButton?.isConnected) newTalkButton.focus(); });
+  }
+  createEffect(() => {
+    controller.updateSession(props.session); controller.updateActor(props.home?.actor.ap_id);
+    discoveryController.updateSession(props.session, props.home?.actor.ap_id);
+  });
+  createEffect(() => { if (state().selected || state().requests?.visible) discoveryController.close(); });
   createEffect(() => {
     const request = props.notificationRequest, home = props.home;
     if (!request) return;
@@ -203,9 +219,12 @@ export function TalkScreen(props: {
     props.onNotificationConsumed?.(request);
     void controller.openNotification(request, home.actor.ap_id);
   });
-  onCleanup(() => controller.dispose());
+  onCleanup(() => { discoveryController.dispose(); controller.dispose(); });
   onMount(() => {
-    const update = () => { setForeground(document.visibilityState !== "hidden"); controller.foregroundChanged(); };
+    const update = () => {
+      setForeground(document.visibilityState !== "hidden"); controller.foregroundChanged();
+      if (document.visibilityState === "hidden") discoveryController.suspend();
+    };
     const readVisible = () => controller.readVisible();
     document.addEventListener("visibilitychange", update);
     window.addEventListener("online", update);
@@ -493,8 +512,44 @@ export function TalkScreen(props: {
         )}
       </Show>
       <Show when={!selected() && !state().requests?.visible}>
+        <button ref={newTalkButton} type="button" class="text-button request-entry" disabled={!props.home}
+          onClick={() => { discoveryController.show(); queueMicrotask(() => peopleInput?.focus()); }}>新しいトーク</button>
         <button type="button" class="text-button request-entry" disabled={!props.home}
           onClick={() => void controller.showRequests()}>メッセージリクエスト（{props.home?.requestCount ?? "…"}）</button>
+        <Show when={discovery().visible}>
+          <section class="people-search" aria-label="新しいトークの相手を検索" aria-busy={discovery().loading || !!discovery().opening}
+            onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); closeDiscovery(); } }}>
+            <div class="people-search-heading"><h2>新しいトーク</h2><button type="button" class="text-button" onClick={closeDiscovery}>検索を閉じる</button></div>
+            <form onSubmit={event => { event.preventDefault(); void discoveryController.search(); }}>
+              <label for={peopleInputId}>相手の名前・ユーザー名</label>
+              <div class="people-search-fields">
+                <input id={peopleInputId} ref={peopleInput} type="search" value={discovery().query} maxLength={256}
+                  placeholder="名前 / @user@server" autocomplete="off"
+                  onInput={event => discoveryController.setQuery(event.currentTarget.value)} />
+                <button type="submit" class="primary" disabled={!discovery().query.trim() || discovery().loading || !!discovery().opening}>
+                  {discovery().loading ? "検索中…" : "検索"}</button>
+              </div>
+            </form>
+            <p class="muted">別のサーバーの相手は @user@server で検索できます。相手を選ぶだけではメッセージを送りません。</p>
+            <Show when={discovery().error}><p class="error" role="alert">{discovery().error}</p></Show>
+            <Show when={discovery().searched && !discovery().people.length && !discovery().loading && !discovery().error}>
+              <p class="empty">相手が見つかりませんでした。名前やアドレスを確認してください。</p>
+            </Show>
+            <ul class="people-results">
+              <For each={discovery().people}>{person => (
+                <li><button type="button" class="talk-row" disabled={discovery().loading || !!discovery().opening}
+                  onClick={() => void discoveryController.openPerson(person.ap_id)}>
+                  <span class="talk-copy"><strong>{person.name ?? person.preferred_username}</strong><span>@{person.username}</span>
+                    <small>{person.ap_id}</small></span>
+                  <Show when={discovery().opening === person.ap_id}><span role="status">確認中…</span></Show>
+                </button></li>
+              )}</For>
+            </ul>
+            <Show when={discovery().hasMore}><button type="button" class="text-button"
+              disabled={discovery().loading || !!discovery().opening} onClick={() => void discoveryController.more()}>ほかの検索結果を表示</button></Show>
+          </section>
+        </Show>
+        <Show when={!discovery().visible}>
         <div class="talk-list">
           <Show
             when={props.home?.contacts.length}
@@ -543,6 +598,7 @@ export function TalkScreen(props: {
             </For>
           </Show>
         </div>
+        </Show>
       </Show>
     </div>
   );

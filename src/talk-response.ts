@@ -76,6 +76,31 @@ export function isTalkMessageRevision(value: unknown): value is string {
   return typeof value === "string" && /^dm-v1:[a-f0-9]{64}$/.test(value);
 }
 
+export function isGroupMessageRevision(value: unknown): value is string {
+  return typeof value === "string" && /^group-message-v1:[a-f0-9]{64}$/.test(value);
+}
+
+export function ownedGroupMessageResponse(id: string, actorApId: string, communityApId: string): WireDecoder<{ message: TalkMessage; revision: string }> {
+  return { document: "Yurumeet owned group message", decode(value) {
+    const data = record(value, "response"), parsed = message(data.message, "message");
+    if (data.community_ap_id !== communityApId || parsed.id !== id || parsed.sender.ap_id !== actorApId || !isGroupMessageRevision(data.revision)) {
+      throw new Error("Owned group message does not match the selected community, author and message");
+    }
+    return { message: parsed, revision: data.revision };
+  } };
+}
+
+export function ownedGroupEditResponse(id: string, content: string, communityApId: string): WireDecoder<{ content: string; revision: string }> {
+  return { document: "Yurumeet owned group edit", decode(value) {
+    const data = record(value, "response"), edited = record(data.message, "message");
+    if (data.success !== true || data.community_ap_id !== communityApId || edited.id !== id || edited.content !== content.trim() ||
+      typeof edited.updated_at !== "string" || !Number.isFinite(Date.parse(edited.updated_at)) || !isGroupMessageRevision(data.revision)) {
+      throw new Error("Owned group edit was not acknowledged");
+    }
+    return { content: edited.content as string, revision: data.revision };
+  } };
+}
+
 export function ownedTalkMessageResponse(id: string, actorApId: string): WireDecoder<{ message: TalkMessage; revision: string }> {
   return { document: "Yurumeet owned DM", decode(value) {
     const data = record(value, "response"), parsed = message(data.message, "message");

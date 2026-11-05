@@ -25,6 +25,9 @@ import {
   ownedTalkEditResponse,
   OWNED_TALK_DELETE_RESPONSE,
   isTalkMessageRevision,
+  isGroupMessageRevision,
+  ownedGroupMessageResponse,
+  ownedGroupEditResponse,
   SENT_MESSAGE_RESPONSE,
   type TalkActor,
   type TalkContact,
@@ -62,6 +65,28 @@ export async function deleteOwnedTalkMessage(session: MobileSession, id: string,
   const path = ownedTalkPath(id);
   if (!isTalkMessageRevision(revision)) throw new Error("メッセージの現在の状態を確認してください。");
   return response(session, path, OWNED_TALK_DELETE_RESPONSE, { method: "DELETE", headers: { "if-match": JSON.stringify(revision) }, signal }, true);
+}
+
+function ownedGroupTalkPath(communityApId: string, id: string) {
+  if (!isTalkNotificationId(communityApId) || !isTalkNotificationId(id)) throw new Error("グループとメッセージの情報を確認できませんでした。");
+  return `/api/communities/${encodeURIComponent(communityApId)}/messages/${encodeURIComponent(id)}`;
+}
+
+export async function loadOwnedGroupTalkMessage(session: MobileSession, communityApId: string, id: string, actorApId: string, signal?: AbortSignal) {
+  const path = ownedGroupTalkPath(communityApId, id);
+  try { return await response(session, path, ownedGroupMessageResponse(id, actorApId, communityApId), { signal }); }
+  catch (cause) {
+    if (cause instanceof MobileApiError && cause.status === 404 && cause.detail === "owned_group_message_not_found") return null;
+    throw cause; // A missing/unsupported community route does not prove absence.
+  }
+}
+
+export async function editOwnedGroupTalkMessage(session: MobileSession, communityApId: string, id: string, content: string, revision: string, signal?: AbortSignal) {
+  const path = ownedGroupTalkPath(communityApId, id);
+  if (!content.trim() || content.trim().length > 5000 || !isGroupMessageRevision(revision)) throw new Error("編集内容を確認してください。");
+  return response(session, path, ownedGroupEditResponse(id, content, communityApId), { method: "PATCH", headers: {
+    "content-type": "application/json", "if-match": JSON.stringify(revision),
+  }, body: JSON.stringify({ content }), signal }, true);
 }
 
 export async function loadTalkRequests(session: MobileSession, signal?: AbortSignal): Promise<TalkRequest[]> {

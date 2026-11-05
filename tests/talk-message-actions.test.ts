@@ -112,12 +112,12 @@ test("delete confirmation can cancel, and a lost ACK uses supported absence read
   expect(c.state().messages.map(x => x.id)).toEqual([theirs.id]); expect(c.state().content).toBe("keep compose");
 });
 
-test("other authors and Group messages cannot use the DM-only mutation path", async () => {
+test("other authors and Group deletion cannot use the DM-only mutation path", async () => {
   const { calls } = transport(), c = subject(); await c.open(peer);
   await c.beginMessageEdit(theirs.id); await c.beginMessageDelete(theirs.id);
   expect(c.state().messageAction).toBeUndefined();
   await c.open({ ...peer, type: "community" });
-  await c.beginMessageEdit(mine.id); await c.beginMessageDelete(mine.id);
+  await c.beginMessageDelete(mine.id);
   expect(c.state().messageAction).toBeUndefined(); expect(calls.filter(x => x.path === path)).toHaveLength(0);
 });
 

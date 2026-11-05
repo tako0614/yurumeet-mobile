@@ -1,5 +1,5 @@
 import { MobileApiError, type MobileSession } from "@takosjp/mobile-kit";
-import { loadOwnedTalkMessage, editOwnedTalkMessage, deleteOwnedTalkMessage, type TalkMessage } from "./api.ts";
+import { loadOwnedTalkMessage, editOwnedTalkMessage, deleteOwnedTalkMessage, loadOwnedGroupTalkMessage, editOwnedGroupTalkMessage, type TalkMessage, type TalkContact } from "./api.ts";
 
 export interface TalkMessageActionState {
   readonly id: string;
@@ -34,6 +34,7 @@ interface Action {
 /** A conversation owns its draft and write even when its view is elsewhere. */
 export function createTalkMessageActions(options: {
   session: () => MobileSession;
+  contact: Pick<TalkContact, "type" | "ap_id">;
   actor: () => string | undefined;
   active: () => boolean;
   isCurrent: () => boolean;
@@ -79,14 +80,16 @@ export function createTalkMessageActions(options: {
     const current = () => owns(item) && readAbort === abort && !abort.signal.aborted;
     emit();
     try {
-      const found = await loadOwnedTalkMessage(session, item.id, item.actor, abort.signal);
+      const found = options.contact.type === "community"
+        ? await loadOwnedGroupTalkMessage(session, options.contact.ap_id, item.id, item.actor, abort.signal)
+        : await loadOwnedTalkMessage(session, item.id, item.actor, abort.signal);
       if (!current()) return;
       item.needsReadback = false;
       if (!found) {
         options.remove(item.id);
         if (item.kind === "delete") action = undefined;
         else { item.unavailable = true; item.revision = undefined; item.submitted = undefined;
-          item.error = "このDMは現在利用できません。編集中の本文は残しています。"; }
+          item.error = "このメッセージは現在利用できません。編集中の本文は残しています。"; }
       } else {
         options.adopt(found.message);
         item.revision = found.revision; item.serverContent = found.message.content ?? ""; item.unavailable = false;
@@ -108,7 +111,8 @@ export function createTalkMessageActions(options: {
 
   async function begin(kind: Action["kind"], id: string) {
     const actor = options.actor(), message = options.message(id);
-    if (!active() || !options.isCurrent() || !actor || message?.sender.ap_id !== actor || action || writeAbort) return;
+    if (!active() || !options.isCurrent() || !actor || message?.sender.ap_id !== actor || action || writeAbort ||
+      (kind === "delete" && options.contact.type !== "user")) return;
     action = { id, actor, kind, content: message.content ?? "", serverContent: message.content ?? "", draftRevision: 0,
       loading: false, pending: false, needsReadback: true, unavailable: false, error: "" };
     await read(true);
@@ -133,7 +137,9 @@ export function createTalkMessageActions(options: {
     item.pending = true; item.error = ""; writeAbort = abort; emit();
     try {
       if (kind === "edit") {
-        const ack = await editOwnedTalkMessage(session, item.id, item.submitted.content, revision, abort.signal);
+        const ack = options.contact.type === "community"
+          ? await editOwnedGroupTalkMessage(session, options.contact.ap_id, item.id, item.submitted.content, revision, abort.signal)
+          : await editOwnedTalkMessage(session, item.id, item.submitted.content, revision, abort.signal);
         if (!owns(item)) return;
         const original = options.message(item.id);
         if (original) options.adopt({ ...original, content: ack.content });
@@ -148,8 +154,13 @@ export function createTalkMessageActions(options: {
       if (owns(item) || active()) void options.afterCommit();
     } catch (cause) {
       if (owns(item)) { item.needsReadback = true;
+        const rejected = cause instanceof MobileApiError && cause.status >= 400 && cause.status < 500 && cause.status !== 408;
+        // A definitive rejection did not acknowledge a write. Keep the text,
+        // require a fresh read before saving, but do not trap the editor closed.
+        if (rejected) item.submitted = undefined;
         item.error = cause instanceof MobileApiError && cause.status === 409
           ? "別の画面でメッセージが変わりました。現在の1件を確認してから操作してください。"
+          : rejected ? "メッセージを変更できませんでした。権限と接続を確認してください。編集内容は残しています。"
           : "変更の結果を確認できませんでした。再送せず、現在の1件を確認してください。"; }
     } finally {
       if (writeAbort === abort) { writeAbort = undefined; item.pending = false; idle(); }

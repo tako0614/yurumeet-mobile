@@ -34,10 +34,14 @@ the exact conditional revision; compose and edit drafts remain separate, includi
 Unknown mutation results and conflicts require explicit single-message readback, never automatic resend. This works
 for older loaded messages outside the latest page; an unsupported host404 is not deletion proof. Switching actors or
 sessions retires prior work, while changing conversations preserves that conversation's draft and pending result.
-These actions require the host's owned-DM reader. Group mutations remain a separate incomplete permission contract.
+DM actions require the host's owned-DM reader. Own group messages also expose edit through the community-specific
+single-message reader and group revision. Current read access and authorship remain required. Unsupported hosts or
+revoked access require explicit rechecking; a generic404 never removes the message. Group deletion and editing
+another author's messages are not offered.
 Read receipts pause during message actions and confirmation dialogs so hidden messages remain unread.
-The server co-commits local changes with explicit-recipient delivery intent, without follower fanout. Remote arrival
-and the existing inbound Note ordering gaps are not qualified by this source/local implementation.
+For DMs the server co-commits local changes with explicit-recipient delivery intent, without follower fanout.
+Group edits update community chat state and use existing receive-refresh behavior; they add no external delivery contract. Remote arrival
+and receiving-host adoption are not qualified by this App's source/local implementation.
 
 The native message-request inbox lists incoming requests for the signed-in account. Opening the peer's current
 conversation does not accept it; an explicit reply does. Normal visible-message read receipts still apply.

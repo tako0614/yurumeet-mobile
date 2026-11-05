@@ -16,6 +16,29 @@ export interface TalkContact extends TalkActor {
   unread_count: number;
 }
 
+export interface TalkPerson extends TalkActor {
+  username: string;
+  icon_url: string | null;
+}
+
+export function talkPeopleResponse(offset: number, remote: boolean): WireDecoder<{ people: TalkPerson[]; hasMore: boolean }> {
+  return { document: "Yurumeet people search", decode(value) {
+    const data = record(value, "response"), rows = array(data.actors, "actors");
+    if (rows.length > 20 || (!remote && (data.limit !== 20 || data.offset !== offset || typeof data.has_more !== "boolean")) ||
+      (!remote && data.has_more === true && !rows.length)) {
+      throw new Error("People search continuation could not be verified");
+    }
+    return { people: rows.map((value, index) => {
+      const field = `actors[${index}]`, item = record(value, field);
+      if (!isTalkNotificationId(item.ap_id)) throw new Error("Person identifier could not be verified");
+      const username = identity(item.username, `${field}.username`);
+      return { ap_id: item.ap_id, username,
+        preferred_username: item.preferred_username === null ? username : identity(item.preferred_username, `${field}.preferred_username`),
+        name: nullableString(item.name, `${field}.name`), icon_url: nullableString(item.icon_url, `${field}.icon_url`) };
+    }), hasMore: !remote && data.has_more === true };
+  } };
+}
+
 export interface TalkRequest {
   id: string;
   sender: TalkActor & { icon_url: string | null };

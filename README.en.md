@@ -1,5 +1,14 @@
 # Yurumeet Mobile
 
+Use **New talk** on the talk list to find a person by name/username or
+`@user@server`. The selected host performs the search; native credentials are
+never sent directly to the remote server. Results display the actor ID, and
+choosing a person resolves that exact ID through the authenticated contact API
+before opening the existing conversation. Search and selection do not follow
+anyone or send a message. Send remains an explicit action under the server's
+existing permissions. Failed searches can be retried explicitly; changing the
+query, closing search or changing the account/server discards late responses.
+
 日本語: [README.md](README.md)
 
 Talk-first Tauri client for the shared Yurucommu family API. It owns the

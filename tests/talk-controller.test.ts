@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { observedInitAck as initAck, observedMessageAck as readAck } from "./talk-read-fixture.ts";
 import type { MobileSession } from "@takosjp/mobile-kit";
 import { createTalkController, type TalkState } from "../src/talk-controller.ts";
 import type { TalkContact, TalkMessage } from "../src/api.ts";
@@ -58,8 +59,11 @@ function sent(item: TalkMessage) {
   return Response.json({ message: item });
 }
 
-function readAck() {
-  return Response.json({ success: true, last_read_at: "2026-10-04T00:00:00Z" });
+
+async function until(check: () => boolean) {
+  const end = Date.now() + 1000;
+  while (!check() && Date.now() < end) await Bun.sleep(0);
+  expect(check()).toBe(true);
 }
 
 function deferred<T>() {
@@ -75,7 +79,7 @@ function deferred<T>() {
 function pathFor(item: TalkContact, suffix = "messages") {
   if (suffix === "read") {
     const kind = item.type === "community" ? "community" : "user";
-    return `/api/dm/${kind}/${encodeURIComponent(item.ap_id)}/read`;
+    return `/api/dm/${kind}/${encodeURIComponent(item.ap_id)}/read-observed`;
   }
   return item.type === "community"
     ? `/api/communities/${encodeURIComponent(item.ap_id)}/${suffix}`
@@ -88,6 +92,7 @@ function controller(options: {
 } = {}) {
   const refreshHome = options.refreshHome ?? (async () => {});
   const subject = createTalkController({
+    observedMessageIds: () => subject.state().messages.map(message => message.id),
     session: options.initialSession ?? session,
     refreshHome,
   });
@@ -99,19 +104,21 @@ test("A to B to A keeps contact drafts and ignores the older open incarnation", 
   const oldAlice = deferred<Response>();
   const bobRead = deferred<Response>();
   const currentAlice = deferred<Response>();
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/read-observed/init")) return initAck();
     const url = new URL(String(input));
     calls.push(`${url.pathname}${url.search}`);
     if (url.pathname === pathFor(alice) && calls.filter((path) => path.startsWith(`${pathFor(alice)}?`)).length === 1)
       return oldAlice.promise;
     if (url.pathname === pathFor(bob)) return bobRead.promise;
     if (url.pathname === pathFor(alice)) return currentAlice.promise;
-    if (url.pathname.endsWith("/read")) return readAck();
+    if (url.pathname.endsWith("/read-observed")) return readAck(init);
     throw new Error(`Unexpected request: ${url.pathname}`);
   }) as unknown as typeof fetch;
   const { subject } = controller();
 
   const firstAlice = subject.open(alice);
+  await until(() => calls.some(path => path.startsWith(`${pathFor(alice)}?`)));
   subject.setDraft("Alice draft");
   subject.back();
   const openBob = subject.open(bob);
@@ -151,9 +158,10 @@ test("contact memory keys include type as well as AP ID", async () => {
   const userContact = contact("user", sharedId, "Shared user");
   const communityContact = contact("community", sharedId, "Shared group");
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/read-observed/init")) return initAck();
     const url = new URL(String(input));
     calls.push({ path: `${url.pathname}${url.search}`, method: init?.method ?? "GET" });
-    return url.pathname.endsWith("/read") ? readAck() : messages();
+    return url.pathname.endsWith("/read-observed") ? readAck(init) : messages();
   }) as unknown as typeof fetch;
   const { subject } = controller();
 
@@ -171,13 +179,9 @@ test("contact memory keys include type as well as AP ID", async () => {
   expect(subject.state().content).toBe("community-specific draft");
   expect(calls.map((call) => call.path)).toEqual([
     `${pathFor(userContact)}?limit=50`,
-    pathFor(userContact, "read"),
     `${pathFor(communityContact)}?limit=50`,
-    pathFor(communityContact, "read"),
     `${pathFor(userContact)}?limit=50`,
-    pathFor(userContact, "read"),
     `${pathFor(communityContact)}?limit=50`,
-    pathFor(communityContact, "read"),
   ]);
 });
 
@@ -185,11 +189,12 @@ test("a stale successful read cannot replace the selected contact or start a rea
   const calls: Array<{ path: string; method: string }> = [];
   const staleRead = deferred<Response>();
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/read-observed/init")) return initAck();
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
     calls.push({ path: `${url.pathname}${url.search}`, method });
     if (url.pathname === pathFor(alice)) return staleRead.promise;
-    if (url.pathname.endsWith("/read")) return readAck();
+    if (url.pathname.endsWith("/read-observed")) return readAck(init);
     if (url.pathname === pathFor(bob)) return messages(message("bob", "Bob message", bob.ap_id));
     throw new Error(`Unexpected request: ${url.pathname}`);
   }) as unknown as typeof fetch;
@@ -217,18 +222,19 @@ test("a send ACK during a reopened delayed GET survives its older message snapsh
   const reopenedRead = deferred<Response>();
   let aliceGets = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/read-observed/init")) return initAck();
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
     calls.push({
       path: `${url.pathname}${url.search}`,
       method,
-      ...(init?.body === undefined ? {} : { body: JSON.parse(String(init.body)) as unknown }),
+      ...(init?.body === undefined || url.pathname.endsWith("/read-observed") ? {} : { body: JSON.parse(String(init.body)) as unknown }),
     });
     if (url.pathname === pathFor(alice) && method === "POST") return sendAck.promise;
     if (url.pathname === pathFor(alice) && ++aliceGets === 1)
       return messages(message("before", "before send", alice.ap_id));
     if (url.pathname === pathFor(alice)) return reopenedRead.promise;
-    if (url.pathname.endsWith("/read")) return readAck();
+    if (url.pathname.endsWith("/read-observed")) return readAck(init);
     if (url.pathname === pathFor(bob)) return messages();
     throw new Error(`Unexpected request: ${url.pathname}`);
   }) as unknown as typeof fetch;
@@ -242,6 +248,7 @@ test("a send ACK during a reopened delayed GET survives its older message snapsh
   await subject.open(bob);
   subject.back();
   const reopen = subject.open(alice);
+  await until(() => calls.filter(call => call.method === "GET" && call.path.startsWith(`${pathFor(alice)}?`)).length === 2);
   expect(subject.state()).toMatchObject({ selected: alice, loading: true });
 
   sendAck.resolve(sent(message("sent-1", "sent text")));
@@ -261,7 +268,6 @@ test("a send ACK during a reopened delayed GET survives its older message snapsh
     { path: pathFor(alice, "read"), method: "POST" },
     { path: pathFor(alice), method: "POST", body: { content: "sent text" } },
     { path: `${pathFor(bob)}?limit=50`, method: "GET" },
-    { path: pathFor(bob, "read"), method: "POST" },
     { path: `${pathFor(alice)}?limit=50`, method: "GET" },
     { path: pathFor(alice, "read"), method: "POST" },
   ]);
@@ -273,19 +279,20 @@ test("the next canonical read expires an ACK overlay omitted from its page", asy
   const delayedRead = deferred<Response>();
   let aliceReads = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/read-observed/init")) return initAck();
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
     calls.push({
       path: `${url.pathname}${url.search}`,
       method,
-      ...(init?.body === undefined ? {} : { body: JSON.parse(String(init.body)) as unknown }),
+      ...(init?.body === undefined || url.pathname.endsWith("/read-observed") ? {} : { body: JSON.parse(String(init.body)) as unknown }),
     });
     if (url.pathname === pathFor(alice) && method === "POST") return post.promise;
     if (url.pathname === pathFor(alice)) {
       aliceReads += 1;
       return aliceReads === 2 ? delayedRead.promise : messages();
     }
-    if (url.pathname.endsWith("/read")) return readAck();
+    if (url.pathname.endsWith("/read-observed")) return readAck(init);
     throw new Error(`Unexpected request: ${url.pathname}`);
   }) as unknown as typeof fetch;
   const { subject } = controller();
@@ -312,16 +319,17 @@ test("refresh failure after a confirmed send does not turn the accepted POST int
   const calls: Array<{ path: string; method: string; body?: unknown }> = [];
   let refreshCalls = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/read-observed/init")) return initAck();
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
     calls.push({
       path: `${url.pathname}${url.search}`,
       method,
-      ...(init?.body === undefined ? {} : { body: JSON.parse(String(init.body)) as unknown }),
+      ...(init?.body === undefined || url.pathname.endsWith("/read-observed") ? {} : { body: JSON.parse(String(init.body)) as unknown }),
     });
     if (url.pathname === pathFor(alice) && method === "POST")
       return sent(message("accepted", "one delivery"));
-    if (url.pathname.endsWith("/read")) return readAck();
+    if (url.pathname.endsWith("/read-observed")) return readAck(init);
     return messages();
   }) as unknown as typeof fetch;
   const { subject } = controller({
@@ -351,15 +359,16 @@ test("a confirmed send updates its contact after navigation and preserves a newe
   const post = deferred<Response>();
   let aliceReads = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/read-observed/init")) return initAck();
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
     calls.push({
       path: `${url.pathname}${url.search}`,
       method,
-      ...(init?.body === undefined ? {} : { body: JSON.parse(String(init.body)) as unknown }),
+      ...(init?.body === undefined || url.pathname.endsWith("/read-observed") ? {} : { body: JSON.parse(String(init.body)) as unknown }),
     });
     if (url.pathname === pathFor(alice) && method === "POST") return post.promise;
-    if (url.pathname.endsWith("/read")) return readAck();
+    if (url.pathname.endsWith("/read-observed")) return readAck(init);
     if (url.pathname === pathFor(alice) && ++aliceReads > 1)
       return messages(
         message("history", "history", alice.ap_id),
@@ -404,18 +413,19 @@ test("pending and uncertain sends never auto-resend and preserve edits made afte
   const pendingPost = deferred<Response>();
   let aliceGets = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/read-observed/init")) return initAck();
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
     calls.push({
       path: `${url.pathname}${url.search}`,
       method,
-      ...(init?.body === undefined ? {} : { body: JSON.parse(String(init.body)) as unknown }),
+      ...(init?.body === undefined || url.pathname.endsWith("/read-observed") ? {} : { body: JSON.parse(String(init.body)) as unknown }),
     });
     if (url.pathname === pathFor(alice) && method === "POST") return pendingPost.promise;
     if (url.pathname === pathFor(alice) && ++aliceGets === 1) return messages();
     if (url.pathname === pathFor(alice)) return messages(message("history", "server copy", alice.ap_id));
     if (url.pathname === pathFor(bob)) return messages();
-    if (url.pathname.endsWith("/read")) return readAck();
+    if (url.pathname.endsWith("/read-observed")) return readAck(init);
     throw new Error(`Unexpected request: ${url.pathname}`);
   }) as unknown as typeof fetch;
   const { subject } = controller();
@@ -457,17 +467,18 @@ test("a known HTTP send failure stays with its contact and cannot clear a newer 
     body?: unknown;
   }> = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/read-observed/init")) return initAck();
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
     calls.push({
       path: `${url.pathname}${url.search}`,
       method,
       authorization: new Headers(init?.headers).get("authorization"),
-      ...(init?.body === undefined ? {} : { body: JSON.parse(String(init.body)) as unknown }),
+      ...(init?.body === undefined || url.pathname.endsWith("/read-observed") ? {} : { body: JSON.parse(String(init.body)) as unknown }),
     });
     if (method === "POST" && url.pathname === pathFor(group))
       return new Response("rejected", { status: 422 });
-    return url.pathname.endsWith("/read") ? readAck() : messages();
+    return url.pathname.endsWith("/read-observed") ? readAck(init) : messages();
   }) as unknown as typeof fetch;
   const { subject } = controller();
 
@@ -484,7 +495,6 @@ test("a known HTTP send failure stays with its contact and cannot clear a newer 
   expect(subject.state().error).toBeTruthy();
   expect(calls).toEqual([
     { path: `${pathFor(group)}?limit=50`, method: "GET", authorization: "Bearer host-session" },
-    { path: pathFor(group, "read"), method: "POST", authorization: "Bearer host-session" },
     {
       path: pathFor(group),
       method: "POST",
@@ -497,6 +507,7 @@ test("a known HTTP send failure stays with its contact and cannot clear a newer 
 test("read ACK errors keep loaded messages visible and expose the HTTP failure", async () => {
   const calls: Array<{ path: string; method: string; authorization: string | null; body?: unknown }> = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/read-observed/init")) return initAck();
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
     calls.push({
@@ -504,7 +515,7 @@ test("read ACK errors keep loaded messages visible and expose the HTTP failure",
       method,
       authorization: new Headers(init?.headers).get("authorization"),
     });
-    return url.pathname.endsWith("/read")
+    return url.pathname.endsWith("/read-observed")
       ? new Response("read unavailable", { status: 503 })
       : messages(message("visible", "loaded", alice.ap_id));
   }) as unknown as typeof fetch;
@@ -535,13 +546,14 @@ test("session replacement through ABA and dispose invalidate every captured call
   const disposedPost = deferred<Response>();
   let aliceReads = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/read-observed/init")) return initAck();
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
     calls.push({
       path: `${url.pathname}${url.search}`,
       method,
       authorization: new Headers(init?.headers).get("authorization"),
-      ...(init?.body === undefined ? {} : { body: JSON.parse(String(init.body)) as unknown }),
+      ...(init?.body === undefined || url.pathname.endsWith("/read-observed") ? {} : { body: JSON.parse(String(init.body)) as unknown }),
     });
     if (url.pathname === pathFor(alice) && method === "GET") {
       aliceReads += 1;
@@ -553,7 +565,7 @@ test("session replacement through ABA and dispose invalidate every captured call
       return calls.filter((call) => call.method === "POST" && call.path === pathFor(alice)).length === 1
         ? oldSend.promise
         : disposedPost.promise;
-    if (url.pathname.endsWith("/read")) return readAck();
+    if (url.pathname.endsWith("/read-observed")) return readAck(init);
     return messages();
   }) as unknown as typeof fetch;
 
@@ -561,6 +573,7 @@ test("session replacement through ABA and dispose invalidate every captured call
   subject.setDraft("private old-session draft");
   const sending = subject.send();
   const staleOpening = subject.open(alice);
+  await until(() => aliceReads === 2);
   const refreshCountBeforeInvalidatedCallbacks = refreshed.length;
   subject.updateSession(nextSession);
   expect(subject.state()).toMatchObject({ selected: undefined, content: "", messages: [], loading: false, sending: false, error: "" });
@@ -571,7 +584,7 @@ test("session replacement through ABA and dispose invalidate every captured call
   staleRead.resolve(messages(message("old-session-read", "private old history", alice.ap_id)));
   await staleOpening;
   expect(refreshed).toHaveLength(refreshCountBeforeInvalidatedCallbacks);
-  expect(calls.filter((call) => call.path === pathFor(alice, "read"))).toHaveLength(1);
+  expect(calls.filter((call) => call.path === pathFor(alice, "read"))).toHaveLength(0);
 
   // Resolve the new authority's read, then dispose with a separately captured send.
   const activeRead = calls.find((call) => call.method === "GET" && call.authorization === "Bearer host-session");
@@ -592,16 +605,17 @@ test("sending is blocked while a contact read is still loading", async () => {
   const calls: Array<{ path: string; method: string; authorization: string | null; body?: unknown }> = [];
   const pendingRead = deferred<Response>();
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/read-observed/init")) return initAck();
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
     calls.push({
       path: `${url.pathname}${url.search}`,
       method,
       authorization: new Headers(init?.headers).get("authorization"),
-      ...(init?.body === undefined ? {} : { body: JSON.parse(String(init.body)) as unknown }),
+      ...(init?.body === undefined || url.pathname.endsWith("/read-observed") ? {} : { body: JSON.parse(String(init.body)) as unknown }),
     });
     if (url.pathname === pathFor(alice)) return pendingRead.promise;
-    return readAck();
+    return readAck(init);
   }) as unknown as typeof fetch;
   const { subject } = controller();
 
@@ -614,7 +628,6 @@ test("sending is blocked while a contact read is still loading", async () => {
   await opening;
   expect(calls.map((call) => [call.path, call.method])).toEqual([
     [`${pathFor(alice)}?limit=50`, "GET"],
-    [pathFor(alice, "read"), "POST"],
   ]);
 });
 
@@ -625,12 +638,14 @@ test("an inactive pending read emits no read ACK, refresh, or further change bef
   let active = true;
   let refreshCalls = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/read-observed/init")) return initAck();
     const url = new URL(String(input));
     calls.push({ path: `${url.pathname}${url.search}`, method: init?.method ?? "GET" });
     if (url.pathname === pathFor(alice)) return pendingRead.promise;
-    return readAck();
+    return readAck(init);
   }) as unknown as typeof fetch;
   const subject = createTalkController({
+    observedMessageIds: () => subject.state().messages.map(message => message.id),
     session,
     refreshHome: async () => { refreshCalls += 1; },
     onChange: (state) => changes.push(state),
@@ -638,6 +653,7 @@ test("an inactive pending read emits no read ACK, refresh, or further change bef
   });
 
   const opening = subject.open(alice);
+  await until(() => calls.some(call => call.method === "GET"));
   const publishedBeforeInactive = changes.length;
   const refreshesBeforeInactive = refreshCalls;
   active = false;
@@ -656,18 +672,20 @@ test("an inactive pending successful POST emits no state change or home refresh"
   let active = true;
   let refreshCalls = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/read-observed/init")) return initAck();
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
     calls.push({
       path: `${url.pathname}${url.search}`,
       method,
-      ...(init?.body === undefined ? {} : { body: JSON.parse(String(init.body)) as unknown }),
+      ...(init?.body === undefined || url.pathname.endsWith("/read-observed") ? {} : { body: JSON.parse(String(init.body)) as unknown }),
     });
     if (url.pathname === pathFor(alice) && method === "POST") return pendingPost.promise;
-    if (url.pathname.endsWith("/read")) return readAck();
+    if (url.pathname.endsWith("/read-observed")) return readAck(init);
     return messages();
   }) as unknown as typeof fetch;
   const subject = createTalkController({
+    observedMessageIds: () => subject.state().messages.map(message => message.id),
     session,
     refreshHome: async () => { refreshCalls += 1; },
     onChange: (state) => changes.push(state),
@@ -685,7 +703,6 @@ test("an inactive pending successful POST emits no state change or home refresh"
 
   expect(calls).toEqual([
     { path: `${pathFor(alice)}?limit=50`, method: "GET" },
-    { path: pathFor(alice, "read"), method: "POST" },
     {
       path: pathFor(alice),
       method: "POST",

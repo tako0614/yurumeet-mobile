@@ -15,6 +15,8 @@ import {
   MESSAGES_RESPONSE,
   MESSAGES_PAGE_RESPONSE,
   READ_RESPONSE,
+  OBSERVED_READ_INIT_RESPONSE,
+  observedReadResponse,
   SENT_MESSAGE_RESPONSE,
   type TalkActor,
   type TalkContact,
@@ -224,6 +226,47 @@ export async function markTalkAsRead(
     READ_RESPONSE,
     { method: "POST", signal },
   );
+}
+
+function observedReadPath(contact: Pick<TalkContact, "type" | "ap_id">) {
+  return `/api/dm/${contact.type === "community" ? "community" : "user"}/${encodeURIComponent(contact.ap_id)}/read-observed`;
+}
+
+export async function initializeObservedTalkRead(
+  session: MobileSession,
+  contact: Pick<TalkContact, "type" | "ap_id">,
+  signal?: AbortSignal,
+): Promise<void> {
+  await response(session, `${observedReadPath(contact)}/init`, OBSERVED_READ_INIT_RESPONSE, { method: "POST", signal });
+}
+
+export async function acknowledgeObservedTalkMessages(
+  session: MobileSession,
+  contact: Pick<TalkContact, "type" | "ap_id">,
+  observed: readonly string[],
+  signal?: AbortSignal,
+): Promise<void> {
+  const ids = [...observed];
+  if (ids.some(id => !id.trim() || id.trim() !== id || id.length > 2048) || new Set(ids).size !== ids.length) {
+    throw new Error("確認済みメッセージのIDが不正です。");
+  }
+  const selected = { ...session, productEndpoints: session.productEndpoints ? { ...session.productEndpoints } : undefined };
+  const path = observedReadPath(contact);
+  const encoder = new TextEncoder();
+  let offset = 0;
+  while (offset < ids.length) {
+    const chunk: string[] = [];
+    while (offset < ids.length && chunk.length < 50) {
+      const next = [...chunk, ids[offset]];
+      if (encoder.encode(JSON.stringify({ message_ids: next })).length > 32768) break;
+      chunk.push(ids[offset++]);
+    }
+    if (!chunk.length) throw new Error("確認済みメッセージのIDが大きすぎます。");
+    await response(selected, path, observedReadResponse(chunk), {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message_ids: chunk }), signal,
+    });
+  }
 }
 
 export async function registerPush(input: MobilePushRegistrationCallbackInput) {

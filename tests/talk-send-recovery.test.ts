@@ -1,3 +1,4 @@
+import { observedInitAck as initAck, observedMessageAck as readAck } from "./talk-read-fixture.ts";
 import { afterEach, expect, test } from "bun:test";
 import { MobileApiError } from "@takosjp/mobile-kit";
 import { createTalkController } from "../src/talk-controller.ts";
@@ -30,19 +31,17 @@ afterEach(() => {
 test("an unknown send cannot POST the same retained draft again before message readback", async () => {
   let sends = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/read-observed/init")) return initAck();
     const path = new URL(String(input)).pathname;
-    if (path.endsWith("/read"))
-      return Response.json({
-        success: true,
-        last_read_at: "2026-11-04T00:00:00Z",
-      });
+    if (path.endsWith("/read-observed")) return readAck(init);
     if (init?.method === "POST") {
       sends++;
       return Response.json({ message: null });
     }
     return Response.json({ messages: [] });
   }) as unknown as typeof fetch;
-  const c = createTalkController({ session, refreshHome: async () => {} });
+  const c = createTalkController({
+    observedMessageIds: () => c.state().messages.map(message => message.id), session, refreshHome: async () => {} });
   await c.open(alice);
   c.setDraft("Keep this message");
   await c.send();
@@ -79,12 +78,9 @@ test("an API-root change retires the prior conversation POST even with identical
   let finish: ((value: Response) => void) | undefined,
     postSignal: AbortSignal | null | undefined;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/read-observed/init")) return initAck();
     const path = new URL(String(input)).pathname;
-    if (path.endsWith("/read"))
-      return Response.json({
-        success: true,
-        last_read_at: "2026-11-04T00:00:00Z",
-      });
+    if (path.endsWith("/read-observed")) return readAck(init);
     if (init?.method === "POST") {
       postSignal = init.signal;
       return new Promise<Response>((resolve) => {
@@ -94,6 +90,7 @@ test("an API-root change retires the prior conversation POST even with identical
     return Response.json({ messages: [] });
   }) as unknown as typeof fetch;
   const c = createTalkController({
+    observedMessageIds: () => c.state().messages.map(message => message.id),
     session: { ...session, apiBaseUrl: session.hostUrl + "/api/a" },
     refreshHome: async () => {},
   });
@@ -162,8 +159,6 @@ function wireMessage(id: string, content = "message") {
     sender: { ap_id: "me", preferred_username: "me", name: null },
   };
 }
-const readAck = () =>
-  Response.json({ success: true, last_read_at: "2026-11-04T00:00:00Z" });
 const page = () => Response.json({ messages: [] });
 async function until(check: () => boolean) {
   const end = Date.now() + 1000;
@@ -173,8 +168,9 @@ async function until(check: () => boolean) {
 test("successful explicit read restores sending without automatically resending retained input", async () => {
   let sends = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/read-observed/init")) return initAck();
     const path = new URL(String(input)).pathname;
-    if (path.endsWith("/read")) return readAck();
+    if (path.endsWith("/read-observed")) return readAck(init);
     if (init?.method === "POST") {
       sends++;
       return sends === 1
@@ -183,7 +179,8 @@ test("successful explicit read restores sending without automatically resending 
     }
     return page();
   }) as unknown as typeof fetch;
-  const c = createTalkController({ session, refreshHome: async () => {} });
+  const c = createTalkController({
+    observedMessageIds: () => c.state().messages.map(message => message.id), session, refreshHome: async () => {} });
   await c.open(alice);
   c.setDraft("Maybe sent");
   await c.send();
@@ -205,15 +202,17 @@ test("failed recovery GET cannot unlock an unknown send or erase a newer draft",
   let sends = 0,
     failRead = false;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/read-observed/init")) return initAck();
     const path = new URL(String(input)).pathname;
-    if (path.endsWith("/read")) return readAck();
+    if (path.endsWith("/read-observed")) return readAck(init);
     if (init?.method === "POST") {
       sends++;
       return new Response("unavailable", { status: 503 });
     }
     return failRead ? new Response("failed read", { status: 500 }) : page();
   }) as unknown as typeof fetch;
-  const c = createTalkController({ session, refreshHome: async () => {} });
+  const c = createTalkController({
+    observedMessageIds: () => c.state().messages.map(message => message.id), session, refreshHome: async () => {} });
   await c.open(alice);
   c.setDraft("Maybe sent");
   await c.send();
@@ -236,8 +235,9 @@ test("a read begun before send failure cannot clear the later unknown outcome", 
     gets = 0,
     sends = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/read-observed/init")) return initAck();
     const path = new URL(String(input)).pathname;
-    if (path.endsWith("/read")) return readAck();
+    if (path.endsWith("/read-observed")) return readAck(init);
     if (init?.method === "POST") {
       sends++;
       return new Promise<Response>((r) => {
@@ -249,7 +249,8 @@ test("a read begun before send failure cannot clear the later unknown outcome", 
       finishRead = r;
     });
   }) as unknown as typeof fetch;
-  const c = createTalkController({ session, refreshHome: async () => {} });
+  const c = createTalkController({
+    observedMessageIds: () => c.state().messages.map(message => message.id), session, refreshHome: async () => {} });
   await c.open(alice);
   c.setDraft("Maybe sent");
   const sending = c.send();
@@ -283,14 +284,16 @@ for (const status of [408, 500, 502, 503, 504])
       input: RequestInfo | URL,
       init?: RequestInit,
     ) => {
-      if (new URL(String(input)).pathname.endsWith("/read")) return readAck();
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/read-observed/init")) return initAck();
+      if (new URL(String(input)).pathname.endsWith("/read-observed")) return readAck(init);
       if (init?.method === "POST") {
         sends++;
         return new Response("ambiguous", { status });
       }
       return page();
     }) as unknown as typeof fetch;
-    const c = createTalkController({ session, refreshHome: async () => {} });
+    const c = createTalkController({
+    observedMessageIds: () => c.state().messages.map(message => message.id), session, refreshHome: async () => {} });
     await c.open(alice);
     c.setDraft("Maybe sent");
     await c.send();
@@ -306,7 +309,8 @@ for (const status of [408, 500, 502, 503, 504])
 test("a known rejection permits a deliberately edited next attempt", async () => {
   let sends = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    if (new URL(String(input)).pathname.endsWith("/read")) return readAck();
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/read-observed/init")) return initAck();
+    if (new URL(String(input)).pathname.endsWith("/read-observed")) return readAck(init);
     if (init?.method === "POST") {
       sends++;
       return sends === 1
@@ -315,7 +319,8 @@ test("a known rejection permits a deliberately edited next attempt", async () =>
     }
     return page();
   }) as unknown as typeof fetch;
-  const c = createTalkController({ session, refreshHome: async () => {} });
+  const c = createTalkController({
+    observedMessageIds: () => c.state().messages.map(message => message.id), session, refreshHome: async () => {} });
   await c.open(alice);
   c.setDraft("Rejected");
   await c.send();
@@ -330,8 +335,9 @@ test("unknown state belongs to type plus AP ID and cannot contaminate a differen
   let userSends = 0,
     groupSends = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/read-observed/init")) return initAck();
     const path = new URL(String(input)).pathname;
-    if (path.endsWith("/read")) return readAck();
+    if (path.endsWith("/read-observed")) return readAck(init);
     if (init?.method === "POST") {
       if (path.startsWith("/api/communities/")) {
         groupSends++;
@@ -342,7 +348,8 @@ test("unknown state belongs to type plus AP ID and cannot contaminate a differen
     }
     return page();
   }) as unknown as typeof fetch;
-  const c = createTalkController({ session, refreshHome: async () => {} });
+  const c = createTalkController({
+    observedMessageIds: () => c.state().messages.map(message => message.id), session, refreshHome: async () => {} });
   await c.open(alice);
   c.setDraft("User pending");
   await c.send();
@@ -363,7 +370,8 @@ test("Back aborts a pending view read but does not cancel its conversation-owned
     finishSend: ((r: Response) => void) | undefined,
     gets = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    if (new URL(String(input)).pathname.endsWith("/read")) return readAck();
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/read-observed/init")) return initAck();
+    if (new URL(String(input)).pathname.endsWith("/read-observed")) return readAck(init);
     if (init?.method === "POST") {
       sendSignal = init.signal;
       return new Promise<Response>((r) => {
@@ -376,11 +384,13 @@ test("Back aborts a pending view read but does not cancel its conversation-owned
       finishRead = r;
     });
   }) as unknown as typeof fetch;
-  const c = createTalkController({ session, refreshHome: async () => {} });
+  const c = createTalkController({
+    observedMessageIds: () => c.state().messages.map(message => message.id), session, refreshHome: async () => {} });
   await c.open(alice);
   c.setDraft("Sending");
   const sending = c.send(),
     reading = c.open(alice);
+  await until(() => !!readSignal);
   c.back();
   expect(readSignal?.aborted).toBe(true);
   expect(sendSignal?.aborted).toBe(false);

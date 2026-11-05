@@ -31,9 +31,23 @@ sends and cached conversation data, so late responses cannot appear in the next 
 
 DMs and group conversations open with the latest 50 messages. Use the older-message action to prepend history;
 the timestamp-plus-ID cursor retains messages that share a timestamp. Existing messages, confirmed sends and
-drafts stay intact. A failed page can be retried explicitly from the same position. Reading older history does
+drafts stay intact. A failed page can be retried explicitly from the same position. Fetching older history does
 not send messages, update read receipts or resolve an unknown send result. Reopening the conversation refreshes
 the latest page. Hosts that omit continuation metadata display an unknown history state instead of exhaustion.
+
+An open, visible conversation checks for new messages periodically. The latest-message action also refreshes
+without discarding drafts or loaded history. A burst beyond the latest page shows an unchecked interval at
+its position, with an action to fetch the missing pages. After intervals are checked, read ACKs name only message rows visible in the viewport;
+loading rows and fetched messages outside the viewport are not acknowledged.
+Hiding the app, leaving the conversation or changing the connection cancels receive work and ignores late
+responses. A failed receive pauses automatic checks until an explicit check, foreground return or network
+recovery. Background receive never resolves an unknown send outcome or automatically resends its draft.
+
+Opening a conversation requires family Core schema 0037 and `read-observed/init` / `read-observed` v1.
+The app confirms init before fetching messages, then submits visible IDs in batches of at most 50 and 32KiB.
+An invalid ACK stops the operation; the app never falls back to timestamp-based `/read`.
+An explicit mark-whole-conversation call from another old client keeps that client's weaker semantics.
+These are source contract requirements, not evidence of a schema apply or deployment on an existing service.
 
 ```sh
 bun run bootstrap

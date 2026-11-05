@@ -34,6 +34,16 @@ referrers, and follow browser CORS and OS codec support. Loading and decoding fa
 Refreshing unchanged messages keeps opened media. Leaving the conversation, hiding the app or changing accounts cancels reads and revokes temporary blob URLs.
 The server still decides media access. OS codec support and native distribution require separate validation.
 
+Choose up to eight supported files through the photo/video field. The app prepares them through the selected
+host's existing multipart media upload API, and can send an attachment-only message. Queued, failed or
+unconfirmed uploads block sending; retry or remove a file explicitly. Upload acknowledgments must match
+the selected format and canonical media identity and include a valid future expiry; expired files require preparation again.
+Attachment-message ACKs bind the submitted author, text and attachments. Files and text added during a send survive
+as the next draft. An unknown send result retains the attachments and uses the existing explicit conversation
+readback fence, without automatic resend. Drafts/uploads belong to their original conversation and survive
+Back; account changes or sign-out cancel and discard them. Removing a draft attachment does not physically
+delete settled media; the host's existing staged-media lifetime owns unreferenced upload collection.
+
 API requests have a 15-second budget including the response body. Leaving a conversation cancels its read while
 retaining its pending send and draft. Sign-out or a change of credentials or API destination retires prior reads,
 sends and cached conversation data, so late responses cannot appear in the next account.

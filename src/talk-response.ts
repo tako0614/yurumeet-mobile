@@ -1,5 +1,6 @@
 import type { WireDecoder } from "@takosjp/mobile-kit";
 import { isTalkNotificationId } from "./talk-notification.ts";
+import type { TalkMessageAttachment } from "./talk-attachments.ts";
 
 export interface TalkActor {
   ap_id: string;
@@ -213,6 +214,20 @@ export const SENT_MESSAGE_RESPONSE: WireDecoder<TalkMessage> = {
     return message(record(value, "response").message, "message");
   },
 };
+
+export function sentMessageResponse(content: string, attachments: readonly TalkMessageAttachment[], sender?: string): WireDecoder<TalkMessage> {
+  if (!attachments.length) return SENT_MESSAGE_RESPONSE;
+  if (!sender) throw new Error("添付の送信者を確認できませんでした。トークを更新してください。");
+  const expected = attachments.map(item => ({ ...item }));
+  return { document: "Yurumeet sent message attachments", decode(value) {
+    const parsed = SENT_MESSAGE_RESPONSE.decode(value);
+    if (parsed.sender.ap_id !== sender || parsed.content !== content.trim() || parsed.attachments?.length !== expected.length ||
+      expected.some((item, index) => Object.entries(item).some(([key, value]) => parsed.attachments?.[index]?.[key] !== value))) {
+      throw new Error("Sent message acknowledgment does not match the submitted author, text and attachments");
+    }
+    return parsed;
+  } };
+}
 
 export const READ_RESPONSE: WireDecoder<void> = {
   document: "Yurumeet read acknowledgment",

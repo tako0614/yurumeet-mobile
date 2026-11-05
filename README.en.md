@@ -20,7 +20,7 @@ not open authenticated routes in an external browser either.
 
 Talk responses are validated before display. An invalid response shows an error instead of an empty conversation;
 use the talk refresh action to read it again. An unknown send result (a disconnected request, malformed successful
-response, or HTTP 408/5xx) retains the draft and blocks further sends until a successful conversation refresh.
+response, a non-followed redirect, or HTTP 408/5xx) retains the draft and blocks further sends until a successful conversation refresh.
 A failed refresh keeps sends blocked; a successful refresh never resends automatically. Edits made while reading
 or sending are preserved. This does not provide server-side deduplication: inspect the conversation before
 deciding to send again.

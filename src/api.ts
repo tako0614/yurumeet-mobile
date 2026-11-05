@@ -141,7 +141,9 @@ export class YurumeetResponseError extends Error {
 /** Preserve genuine HTTP status/detail while classifying an ambiguous send. */
 export function isUncertainMessageSend(cause: unknown): boolean {
   return (cause instanceof YurumeetResponseError && cause.uncertainSend) ||
-    (cause instanceof MobileApiError && (cause.status >= 500 || cause.status === 408));
+    // A no-follow redirect can arrive after a committed POST. Only definite
+    // client rejections (apart from request timeout) acknowledge no success.
+    (cause instanceof MobileApiError && !(cause.status >= 400 && cause.status < 500 && cause.status !== 408));
 }
 
 async function response<T>(

@@ -120,6 +120,14 @@ test("definite send rejection retains ready files without an automatic retry", a
   await c.open(group); c.addAttachments([png()]); await until(() => c.state().attachments[0]?.phase === "ready"); await c.send(); expect(c.state().uncertain).toBe(false); expect(c.state().attachments[0]?.phase).toBe("ready"); expect(t.sends()).toHaveLength(1);
 });
 
+for (const withAttachment of [false, true]) test(`a native no-follow redirect is an unknown send result (attachment=${withAttachment})`, async () => {
+  const t = transport(call => call.path.endsWith("/messages") && call.method === "POST" ? new Response(null, { status: 303, headers: { location: session.hostUrl + "/next" } }) : undefined), c = subject();
+  await c.open(peer); c.setDraft("Keep redirected draft");
+  if (withAttachment) { c.addAttachments([png()]); await until(() => c.state().attachments[0]?.phase === "ready"); }
+  await c.send(); expect(c.state().uncertain).toBe(true); expect(c.state().content).toBe("Keep redirected draft"); expect(c.state().attachments.length).toBe(withAttachment ? 1 : 0);
+  await c.send(); expect(t.sends()).toHaveLength(1);
+});
+
 test("expired upload receipts require explicit re-upload before sending", async () => {
   const t = transport(), c = subject(); await c.open(peer); c.addAttachments([png()]); await until(() => c.state().attachments[0]?.phase === "ready");
   Date.now = () => originalNow() + 8 * 86400_000; expect(c.state().attachments[0]?.phase).toBe("expired"); expect(c.state().canSend).toBe(false); await c.send(); expect(t.sends()).toHaveLength(0);

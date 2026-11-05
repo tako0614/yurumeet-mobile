@@ -1,4 +1,4 @@
-import { createEffect, createSignal, createUniqueId, For, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, createUniqueId, For, onCleanup, onMount, Show } from "solid-js";
 import {
   formatMobilePreviewDate,
   mobileTextRemaining,
@@ -18,6 +18,7 @@ import {
 } from "./api.ts";
 import { createTalkController, type TalkState } from "./talk-controller.ts";
 import { talkSessionIdentity } from "./talk-session.ts";
+import { TalkMedia } from "./talk-media.tsx";
 import type { TalkNotificationRequest } from "./talk-notification.ts";
 import type { TalkRequest } from "./talk-response.ts";
 import type { TalkMessageActionState } from "./talk-message-actions.ts";
@@ -214,6 +215,8 @@ export function TalkScreen(props: {
   });
   const selected = () => state().selected;
   const messages = () => state().messages;
+  const messageById = createMemo(() => new Map(messages().map(message => [message.id, message])));
+  const messageIds = createMemo(() => [...messageById().keys()]);
   const content = () => state().content;
   const loading = () => state().loading;
   const sending = () => state().sending;
@@ -358,17 +361,18 @@ export function TalkScreen(props: {
                 <p class="empty">以前のメッセージの有無を確認できません。</p>
               </Show>
               <MobilePreviewList class="message-list">
-                <For each={messages()}>
+                <For each={messageIds()}>
+                  {id => <Show when={messageById().get(id)}>
                   {(message) => (
                     <li
-                      data-message-id={message.id}
+                      data-message-id={message().id}
                       class={
-                        message.sender.ap_id === props.home?.actor.ap_id
+                        message().sender.ap_id === props.home?.actor.ap_id
                           ? "mine"
                           : ""
                       }
                     >
-                      <Show when={state().gaps.find(gap => gap.beforeId === message.id)}>
+                      <Show when={state().gaps.find(gap => gap.beforeId === message().id)}>
                         {(gap) => (
                           <div class="talk-gap" role="status">
                             <p>この間のメッセージは未確認です。</p>
@@ -377,7 +381,7 @@ export function TalkScreen(props: {
                                 type="button"
                                 class="text-button"
                                 disabled={state().loadingOlder || loading() || !!state().messageAction}
-                                onClick={() => void loadGap(message.id)}
+                                onClick={() => void loadGap(message().id)}
                               >
                                 間のメッセージを取得
                               </button>
@@ -387,24 +391,26 @@ export function TalkScreen(props: {
                       </Show>
                       <MobilePreviewCard class="message-bubble">
                         <p>
-                          {message.content || (message.attachments?.length
-                            ? `添付ファイル（${message.attachments.length}件）`
+                          {message().content || (message().attachments?.length
+                            ? `添付ファイル（${message().attachments?.length}件）`
                             : "")}
                         </p>
+                        <TalkMedia attachments={message().attachments} session={props.session} isActive={() => props.isActive?.() !== false && foreground()} />
                         <small>
-                          {message.created_at
-                            ? formatMobilePreviewDate(message.created_at, "ja-JP")
+                          {message().created_at
+                            ? formatMobilePreviewDate(message().created_at ?? "", "ja-JP")
                             : ""}
                         </small>
-                        <Show when={message.sender.ap_id === props.home?.actor.ap_id}>
+                        <Show when={message().sender.ap_id === props.home?.actor.ap_id}>
                           <div class="message-action-buttons">
-                            <button type="button" class="text-button" disabled={!state().canManageMessages} onClick={() => void controller.beginMessageEdit(message.id)}>編集</button>
-                            <button type="button" class="text-button" disabled={!state().canManageMessages} onClick={() => void controller.beginMessageDelete(message.id)}>削除…</button>
+                            <button type="button" class="text-button" disabled={!state().canManageMessages} onClick={() => void controller.beginMessageEdit(message().id)}>編集</button>
+                            <button type="button" class="text-button" disabled={!state().canManageMessages} onClick={() => void controller.beginMessageDelete(message().id)}>削除…</button>
                           </div>
                         </Show>
                       </MobilePreviewCard>
                     </li>
                   )}
+                  </Show>}
                 </For>
               </MobilePreviewList>
             </Show>

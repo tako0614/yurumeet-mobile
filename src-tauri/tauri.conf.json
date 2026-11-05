@@ -20,8 +20,8 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data: https:; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost http://localhost:* http://127.0.0.1:* https:",
-      "devCsp": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data: http: https:; connect-src 'self' ipc: http: https: ws: wss:",
+      "csp": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data: blob: https:; media-src blob: https:; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost http://localhost:* http://127.0.0.1:* https:",
+      "devCsp": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data: blob: http: https:; media-src blob: https:; connect-src 'self' ipc: http: https: ws: wss:",
       "freezePrototype": true
     }
   },

@@ -117,7 +117,7 @@ export function createTalkController(options: {
   function state(): TalkState {
     return {
       messageAction: selected?.messageActions?.state(),
-      canManageMessages: active(authority) && !!actorApId && selected?.contact.type === "user" && !loading && !loadingOlder &&
+      canManageMessages: active(authority) && !!actorApId && !!selected && !loading && !loadingOlder &&
         !selected.sending && !selected.uncertain && !selected.messageActions?.state(),
       requests: requestsVisible || returnToRequests ? {
         visible: requestsVisible, items: [...requestItems], loading: requestWork === "list",
@@ -473,9 +473,10 @@ export function createTalkController(options: {
       conversations.set(key, entry);
       const owned = entry, expected = authority;
       entry.messageActions = createTalkMessageActions({
+        contact: { type: owned.contact.type, ap_id: owned.contact.ap_id },
         session: () => session, actor: () => actorApId,
         active: () => active(expected) && conversations.get(key) === owned,
-        isCurrent: () => selected === owned && owned.contact.type === "user" && !loading && !loadingOlder && !owned.sending && !owned.uncertain,
+        isCurrent: () => selected === owned && !loading && !loadingOlder && !owned.sending && !owned.uncertain,
         message: id => owned.messages.find(message => message.id === id),
         pauseReads() {
           if (selected !== owned) return;

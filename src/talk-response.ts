@@ -1,4 +1,5 @@
 import type { WireDecoder } from "@takosjp/mobile-kit";
+import { isTalkNotificationId } from "./talk-notification.ts";
 
 export interface TalkActor {
   ap_id: string;
@@ -12,6 +13,25 @@ export interface TalkContact extends TalkActor {
   last_message: { content: string; is_mine: boolean } | null;
   last_message_at: string | null;
   unread_count: number;
+}
+
+export function notificationTargetResponse(eventId: string, recipientApId: string): WireDecoder<{ type: TalkContact["type"]; ap_id: string }> {
+  return { document: "Yurumeet notification target", decode(value) {
+    const response = record(value, "response"), target = record(response.target, "target");
+    if (response.event_id !== eventId || response.recipient_ap_id !== recipientApId ||
+      (target.type !== "user" && target.type !== "community") || !isTalkNotificationId(target.ap_id)) {
+      throw new Error("Notification target does not match the selected account");
+    }
+    return { type: target.type, ap_id: target.ap_id };
+  } };
+}
+
+export function notificationContactResponse(target: { type: TalkContact["type"]; ap_id: string }): WireDecoder<TalkContact> {
+  return { document: "Yurumeet notification contact", decode(value) {
+    const parsed = contact(record(value, "response").contact, target.type, "contact");
+    if (parsed.ap_id !== target.ap_id) throw new Error("Notification contact does not match the target");
+    return parsed;
+  } };
 }
 
 export interface TalkMessage {

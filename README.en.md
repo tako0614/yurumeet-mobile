@@ -101,7 +101,14 @@ credential name. Non-ASCII values and anchors are fine.
   above, they are not opened in an external browser.
 - A link for another saved server shows that server and waits for the user to
   switch; the route opens after the switch, or after sign-in when signed out.
-- Tapping a notification opens the talk screen, as before.
+- A tap resolves `/api/dm/notification-target` as the signed-in account and opens
+  the returned DM or group natively. Event IDs and message object IDs are never
+  guessed to be peers. It waits for the authenticated home and foreground view;
+  account changes, view disposal and a later tap retire older work. Receiving a
+  notification alone does not open a chat or mark messages read.
+- An unsupported server, removed target or revoked access shows an error and an
+  explicit retry while retaining the list and drafts. This requires the host
+  API; real OS push delivery and launch remain separate verification.
 
 Until store IDs exist, Takosumi screen interfaces do not declare `clients`.
 Universal links / App Links on a publisher domain are not set up.

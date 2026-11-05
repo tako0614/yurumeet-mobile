@@ -17,12 +17,15 @@ import {
   READ_RESPONSE,
   OBSERVED_READ_INIT_RESPONSE,
   observedReadResponse,
+  notificationTargetResponse,
+  notificationContactResponse,
   SENT_MESSAGE_RESPONSE,
   type TalkActor,
   type TalkContact,
   type TalkMessage,
   type TalkMessagePage,
 } from "./talk-response.ts";
+import { isTalkNotificationId, type TalkNotificationRequest } from "./talk-notification.ts";
 
 export type { TalkContact, TalkMessage } from "./talk-response.ts";
 
@@ -161,6 +164,39 @@ export async function loadUserMessages(
     MESSAGES_RESPONSE,
     { signal },
   );
+}
+
+/** Resolve on the selected host, then fetch its canonical contact without guessing. */
+export async function loadTalkNotificationContact(
+  session: MobileSession,
+  request: Pick<TalkNotificationRequest, "eventId" | "objectId">,
+  recipientApId: string,
+  signal?: AbortSignal,
+): Promise<TalkContact> {
+  if (!isTalkNotificationId(request.eventId) || !isTalkNotificationId(recipientApId) ||
+    (request.objectId !== undefined && !isTalkNotificationId(request.objectId))) {
+    throw new Error("通知の情報を確認できませんでした。");
+  }
+  const selected = { ...session, productEndpoints: session.productEndpoints ? { ...session.productEndpoints } : undefined };
+  const query = new URLSearchParams({ event_id: request.eventId,
+    ...(request.objectId !== undefined ? { object_id: request.objectId } : {}) });
+  const read = new AbortController();
+  const cancel = () => read.abort(signal?.reason);
+  signal?.addEventListener("abort", cancel, { once: true });
+  if (signal?.aborted) cancel();
+  const deadline = setTimeout(() => read.abort(new Error("通知先を時間内に確認できませんでした。再確認してください。")), 15_000);
+  try {
+    if (read.signal.aborted) throw read.signal.reason;
+    const target = await response(selected, `/api/dm/notification-target?${query}`,
+      notificationTargetResponse(request.eventId, recipientApId), { signal: read.signal });
+    if (read.signal.aborted) throw read.signal.reason;
+    return await response(selected, `/api/dm/contact/${encodeURIComponent(target.ap_id)}`,
+      notificationContactResponse(target), { signal: read.signal });
+  } finally {
+    clearTimeout(deadline);
+    signal?.removeEventListener("abort", cancel);
+    read.abort();
+  }
 }
 
 export async function loadTalkMessagePage(

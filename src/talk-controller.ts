@@ -1,9 +1,11 @@
 import { talkSessionIdentity } from "./talk-session.ts";
 import type { TalkMessagePage } from "./talk-response.ts";
+import type { TalkNotificationRequest } from "./talk-notification.ts";
 import {
   appendUniqueMobileItemsById,
   prependUniqueMobileItemsByKey,
   canSubmitMobileText,
+  MobileApiError,
   type MobileSession,
 } from "@takosjp/mobile-kit";
 import {
@@ -13,11 +15,13 @@ import {
   sendCommunityMessage,
   sendUserMessage,
   isUncertainMessageSend,
+  loadTalkNotificationContact,
   type TalkContact,
   type TalkMessage,
 } from "./api.ts";
 
 export interface TalkState {
+  readonly notification?: { readonly loading: boolean; readonly error: string };
   readonly selected?: TalkContact;
   readonly messages: readonly TalkMessage[];
   readonly content: string;
@@ -81,10 +85,13 @@ export function createTalkController(options: {
   let receiveAbort: AbortController | undefined;
   let cancelReceive: (() => void) | undefined;
   let receiveFailed = false;
+  let notificationAbort: AbortController | undefined;
+  let notification: { request: TalkNotificationRequest; recipient: string; loading: boolean; error: string } | undefined;
   const conversations = new Map<string, Conversation>();
 
   function state(): TalkState {
     return {
+      notification: notification ? { loading: notification.loading, error: notification.error } : undefined,
       selected: selected?.contact,
       messages: selected?.messages ?? [],
       content: selected?.content ?? "",
@@ -121,6 +128,45 @@ export function createTalkController(options: {
     const pending = receiveAbort;
     receiveAbort = undefined;
     pending?.abort();
+  }
+
+  function dismissNotification() {
+    notificationAbort?.abort();
+    notificationAbort = undefined;
+    notification = undefined;
+    publish();
+  }
+
+  async function openNotification(request: TalkNotificationRequest, recipient: string) {
+    if (!active(authority) || request.sessionKey !== sessionKey) return;
+    notificationAbort?.abort();
+    const read = new AbortController();
+    notificationAbort = read;
+    notification = { request, recipient, loading: true, error: "" };
+    const expected = authority, incarnation = view;
+    const owns = () => active(expected) && view === incarnation && notificationAbort === read && !read.signal.aborted;
+    publish();
+    try {
+      const contact = await loadTalkNotificationContact(session, request, recipient, read.signal);
+      if (!owns()) return;
+      notificationAbort = undefined;
+      notification = undefined;
+      await open(contact);
+    } catch (cause) {
+      if (!owns()) return;
+      notification = { request, recipient, loading: false,
+        error: cause instanceof MobileApiError && cause.status === 404
+          ? "通知先のトークは現在利用できません。一覧からも開けます。"
+          : "通知先のトークを確認できませんでした。接続を確認してから再確認するか、一覧から開いてください。" };
+      publish();
+    } finally {
+      if (notificationAbort === read) notificationAbort = undefined;
+    }
+  }
+
+  function retryNotification() {
+    if (!notification || notification.loading) return Promise.resolve();
+    return openNotification(notification.request, notification.recipient);
   }
 
   function canReceive() {
@@ -263,6 +309,7 @@ export function createTalkController(options: {
 
   async function open(contact: TalkContact) {
     if (!active(authority)) return;
+    dismissNotification();
     stopReceive();
     receiveFailed = false;
     const entry = conversation(contact);
@@ -433,6 +480,7 @@ export function createTalkController(options: {
 
   function back() {
     if (disposed) return;
+    dismissNotification();
     stopReceive();
     view += 1;
     readAbort?.abort();
@@ -511,6 +559,9 @@ export function createTalkController(options: {
     const key = talkSessionIdentity(next);
     session = { ...next };
     if (key === sessionKey) return;
+    notificationAbort?.abort();
+    notificationAbort = undefined;
+    notification = undefined;
     stopReceive();
     sessionKey = key;
     authority += 1;
@@ -526,6 +577,9 @@ export function createTalkController(options: {
   }
 
   function dispose() {
+    notificationAbort?.abort();
+    notificationAbort = undefined;
+    notification = undefined;
     stopReceive();
     disposed = true;
     authority += 1;
@@ -539,7 +593,7 @@ export function createTalkController(options: {
     loadingOlder = false;
   }
 
-  return { state, open, loadOlder, loadGap, back, setDraft, send, updateSession, foregroundChanged,
+  return { state, open, openNotification, retryNotification, dismissNotification, loadOlder, loadGap, back, setDraft, send, updateSession, foregroundChanged,
     readVisible: () => { void refreshLatest(false); }, dispose };
 }
 

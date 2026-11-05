@@ -17,6 +17,8 @@ import {
   type YurumeetMobileHome,
 } from "./api.ts";
 import { createTalkController, type TalkState } from "./talk-controller.ts";
+import { talkSessionIdentity } from "./talk-session.ts";
+import type { TalkNotificationRequest } from "./talk-notification.ts";
 import {
   displayHostRoutePath,
   hostRouteNoticeFor,
@@ -50,7 +52,10 @@ export function TalkScreen(props: {
   session: MobileSession;
   refreshHome: () => Promise<void>;
   isActive?: () => boolean;
+  notificationRequest?: TalkNotificationRequest;
+  onNotificationConsumed?: (request: TalkNotificationRequest) => void;
 }) {
+  const [foreground, setForeground] = createSignal(document.visibilityState !== "hidden");
   const [state, setState] = createSignal<TalkState>({
     messages: [], content: "", loading: false, loadingOlder: false, refreshing: false, gaps: [], hasMore: undefined, historyError: "",
     sending: false, uncertain: false, canSend: false, error: "",
@@ -83,9 +88,20 @@ export function TalkScreen(props: {
     },
   });
   createEffect(() => controller.updateSession(props.session));
+  createEffect(() => {
+    const request = props.notificationRequest, home = props.home;
+    if (!request) return;
+    if (request.sessionKey !== talkSessionIdentity(props.session)) {
+      return;
+    }
+    if (!home || !foreground() || props.isActive?.() === false) return;
+    controller.updateSession(props.session);
+    props.onNotificationConsumed?.(request);
+    void controller.openNotification(request, home.actor.ap_id);
+  });
   onCleanup(() => controller.dispose());
   onMount(() => {
-    const update = () => controller.foregroundChanged();
+    const update = () => { setForeground(document.visibilityState !== "hidden"); controller.foregroundChanged(); };
     const readVisible = () => controller.readVisible();
     document.addEventListener("visibilitychange", update);
     window.addEventListener("online", update);
@@ -127,6 +143,15 @@ export function TalkScreen(props: {
 
   return (
     <div class="talk-surface" ref={surface}>
+      <Show when={state().notification}>
+        {(notice) => <div role="status" class="talk-error">
+          <p>{notice().loading ? "通知先のトークを確認中…" : notice().error}</p>
+          <Show when={!notice().loading}>
+            <button type="button" class="text-button" onClick={() => void controller.retryNotification()}>通知先を再確認</button>
+          </Show>
+          <button type="button" class="text-button" onClick={() => controller.dismissNotification()}>閉じる</button>
+        </div>}
+      </Show>
       <Show when={selected()}>
         {(contact) => (
           <MobilePreviewSection

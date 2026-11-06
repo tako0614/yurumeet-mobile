@@ -164,3 +164,80 @@ test("the latest tap owns completion and a different-session request never invok
   expect(c.state().notification).toBeUndefined();
   expect(calls.filter(call => call.path.startsWith("/api/dm/contact/"))).toHaveLength(1);
 });
+
+for (const phase of ["target", "contact"] as const) {
+  test(`hiding during notification ${phase} resolution preserves the chat and requires a foreground retry`, async () => {
+    let foreground = true, hold = true;
+    const pending = deferred<Response>(), started = deferred<void>();
+    let signal: AbortSignal | null | undefined;
+    const calls = transport((url, init) => {
+      if (!hold || (phase === "target" ? url.pathname !== "/api/dm/notification-target" : !url.pathname.startsWith("/api/dm/contact/"))) return;
+      hold = false; signal = init?.signal; started.resolve();
+      return pending.promise; // Deliberately ignores abort to test the late-response fence too.
+    }, group);
+    const c = createTalkController({ session, actorApId: me, refreshHome: async () => {}, observedMessageIds: () => [],
+      receive: { isForeground: () => foreground, schedule: () => () => {} } });
+    subjects.push(c);
+    await c.open(peer);
+    c.setDraft("Keep the original conversation draft");
+    calls.length = 0;
+    const opening = c.openNotification(request(), me);
+    await started.promise;
+
+    foreground = false;
+    c.foregroundChanged();
+    pending.resolve(Response.json(phase === "target" ? target(group) : { contact: group }));
+    await opening;
+    expect(c.state().selected).toEqual(peer);
+    expect(c.state().content).toBe("Keep the original conversation draft");
+    expect(signal?.aborted).toBe(true);
+    expect(c.state().notification).toMatchObject({ loading: false });
+    expect(c.state().notification?.error).not.toBe("");
+    expect(calls.every(call => call.method === "GET" && !call.path.endsWith("/messages"))).toBe(true);
+    const countWhileHidden = calls.length;
+    await c.retryNotification();
+    expect(calls).toHaveLength(countWhileHidden);
+
+    foreground = true;
+    const targetCount = calls.filter(call => call.path === "/api/dm/notification-target").length;
+    c.foregroundChanged();
+    await Promise.resolve();
+    expect(calls.filter(call => call.path === "/api/dm/notification-target")).toHaveLength(targetCount);
+    expect(c.state().selected).toEqual(peer);
+    await c.retryNotification();
+    expect(c.state().selected).toEqual(group);
+    expect(c.state().notification).toBeUndefined();
+    c.back();
+    await c.open(peer);
+    expect(c.state().content).toBe("Keep the original conversation draft");
+  });
+}
+
+test("a hidden target response cannot open a chat before the visibility listener runs", async () => {
+  let foreground = true;
+  const pending = deferred<Response>(), started = deferred<void>();
+  let signal: AbortSignal | null | undefined;
+  const calls = transport((url, init) => {
+    if (url.pathname !== "/api/dm/notification-target") return;
+    signal = init?.signal; started.resolve();
+    return pending.promise;
+  }, group);
+  const c = createTalkController({ session, refreshHome: async () => {}, observedMessageIds: () => [],
+    receive: { isForeground: () => foreground, schedule: () => () => {} } });
+  subjects.push(c);
+  await c.open(peer);
+  c.setDraft("Draft before the visibility event");
+  calls.length = 0;
+  const opening = c.openNotification(request(), me);
+  await started.promise;
+  foreground = false; // The document state is already hidden; its event has not run yet.
+  pending.resolve(Response.json(target(group)));
+  await opening;
+
+  expect(c.state().selected).toEqual(peer);
+  expect(c.state().content).toBe("Draft before the visibility event");
+  expect(c.state().notification).toMatchObject({ loading: false });
+  expect(c.state().notification?.error).not.toBe("");
+  expect(signal?.aborted).toBe(true);
+  expect(calls.map(call => call.path)).toEqual(["/api/dm/notification-target"]);
+});

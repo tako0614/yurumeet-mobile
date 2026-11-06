@@ -155,7 +155,7 @@ export function TalkScreen(props: {
   notificationRequest?: TalkNotificationRequest;
   onNotificationConsumed?: (request: TalkNotificationRequest) => void;
 }) {
-  const [foreground, setForeground] = createSignal(document.visibilityState !== "hidden");
+  const [foreground, setForeground] = createSignal(document.visibilityState !== "hidden", { equals: false });
   const [fileSelectionError, setFileSelectionError] = createSignal("");
   let acceptFiles: ((files: readonly File[]) => boolean) | undefined;
   const [state, setState] = createSignal<TalkState>({
@@ -214,7 +214,7 @@ export function TalkScreen(props: {
     if (request.sessionKey !== talkSessionIdentity(props.session)) {
       return;
     }
-    if (!home || !foreground() || props.isActive?.() === false) return;
+    if (!home || !foreground() || document.visibilityState === "hidden" || props.isActive?.() === false) return;
     controller.updateSession(props.session);
     props.onNotificationConsumed?.(request);
     void controller.openNotification(request, home.actor.ap_id);

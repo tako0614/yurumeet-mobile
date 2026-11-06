@@ -183,18 +183,31 @@ export function createTalkController(options: {
     publish();
   }
 
+  function notificationForeground() {
+    return options.receive?.isForeground() !== false;
+  }
+
+  function suspendNotification() {
+    if (!notificationAbort) return;
+    const read = notificationAbort;
+    notificationAbort = undefined;
+    read.abort();
+    if (notification) notification = { ...notification, loading: false,
+      error: "通知先の確認を中断しました。画面に戻ってから再確認してください。" };
+  }
+
   async function openNotification(request: TalkNotificationRequest, recipient: string) {
-    if (!active(authority) || request.sessionKey !== sessionKey) return;
+    if (!active(authority) || !notificationForeground() || request.sessionKey !== sessionKey) return;
     stopRequests();
     notificationAbort?.abort();
     const read = new AbortController();
     notificationAbort = read;
     notification = { request, recipient, loading: true, error: "" };
     const expected = authority, incarnation = view;
-    const owns = () => active(expected) && view === incarnation && notificationAbort === read && !read.signal.aborted;
+    const owns = () => active(expected) && notificationForeground() && view === incarnation && notificationAbort === read && !read.signal.aborted;
     publish();
     try {
-      const contact = await loadTalkNotificationContact(session, request, recipient, read.signal);
+      const contact = await loadTalkNotificationContact(session, request, recipient, read.signal, owns);
       if (!owns()) return;
       notificationAbort = undefined;
       notification = undefined;
@@ -207,7 +220,10 @@ export function createTalkController(options: {
           : "通知先のトークを確認できませんでした。接続を確認してから再確認するか、一覧から開いてください。" };
       publish();
     } finally {
-      if (notificationAbort === read) notificationAbort = undefined;
+      if (notificationAbort === read) {
+        if (notificationForeground()) notificationAbort = undefined;
+        else { suspendNotification(); publish(); }
+      }
     }
   }
 
@@ -433,6 +449,7 @@ export function createTalkController(options: {
   }
 
   function foregroundChanged() {
+    if (!notificationForeground()) suspendNotification();
     stopReceive();
     receiveFailed = false;
     if (canReceive()) void refreshLatest();

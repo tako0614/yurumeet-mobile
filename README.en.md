@@ -56,6 +56,9 @@ delete settled media; the host's existing staged-media lifetime owns unreference
 API requests have a 15-second budget including the response body. Leaving a conversation cancels its read while
 retaining its pending send and draft. Sign-out or a change of credentials or API destination retires prior reads,
 sends and cached conversation data, so late responses cannot appear in the next account.
+Conversations with drafts or an explicit send action in this app remain reachable from the list if home refresh fails.
+These local routes do not assert that the server retains history or accepted the send.
+This recovery lasts for the current app lifetime; it does not persist drafts across app termination or reload.
 
 Own DM messages expose native edit and confirmed delete actions. A fresh author-only single-message read supplies
 the exact conditional revision; compose and edit drafts remain separate, including newer input during a save ACK.

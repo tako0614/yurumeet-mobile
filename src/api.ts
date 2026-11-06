@@ -276,6 +276,7 @@ export async function loadTalkNotificationContact(
   request: Pick<TalkNotificationRequest, "eventId" | "objectId">,
   recipientApId: string,
   signal?: AbortSignal,
+  isCurrent?: () => boolean,
 ): Promise<TalkContact> {
   if (!isTalkNotificationId(request.eventId) || !isTalkNotificationId(recipientApId) ||
     (request.objectId !== undefined && !isTalkNotificationId(request.objectId))) {
@@ -289,13 +290,19 @@ export async function loadTalkNotificationContact(
   signal?.addEventListener("abort", cancel, { once: true });
   if (signal?.aborted) cancel();
   const deadline = setTimeout(() => read.abort(new Error("通知先を時間内に確認できませんでした。再確認してください。")), 15_000);
-  try {
+  function checkCurrent() {
     if (read.signal.aborted) throw read.signal.reason;
+    if (isCurrent?.() === false) throw new Error("通知先の確認を中断しました。画面に戻ってから再確認してください。");
+  }
+  try {
+    checkCurrent();
     const target = await response(selected, `/api/dm/notification-target?${query}`,
       notificationTargetResponse(request.eventId, recipientApId), { signal: read.signal });
-    if (read.signal.aborted) throw read.signal.reason;
-    return await response(selected, `/api/dm/contact/${encodeURIComponent(target.ap_id)}`,
+    checkCurrent();
+    const contact = await response(selected, `/api/dm/contact/${encodeURIComponent(target.ap_id)}`,
       notificationContactResponse(target), { signal: read.signal });
+    checkCurrent();
+    return contact;
   } finally {
     clearTimeout(deadline);
     signal?.removeEventListener("abort", cancel);

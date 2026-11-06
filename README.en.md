@@ -159,6 +159,8 @@ credential name. Non-ASCII values and anchors are fine.
   guessed to be peers. It waits for the authenticated home and foreground view;
   account changes, view disposal and a later tap retire older work. Receiving a
   notification alone does not open a chat or mark messages read.
+- Moving the app to the background during target resolution cancels that read and keeps the current conversation and draft.
+  Late replies cannot open a chat. Return to the foreground and explicitly retry the notification target to continue.
 - An unsupported server, removed target or revoked access shows an error and an
   explicit retry while retaining the list and drafts. This requires the host
   API; real OS push delivery and launch remain separate verification.

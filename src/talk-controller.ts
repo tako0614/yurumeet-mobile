@@ -27,6 +27,7 @@ import {
 } from "./api.ts";
 
 export interface TalkState {
+  readonly retainedContacts: readonly TalkContact[];
   readonly attachments: readonly TalkDraftAttachment[];
   readonly attachmentError: string;
   readonly canAddAttachments: boolean;
@@ -59,6 +60,7 @@ export interface TalkState {
 }
 
 interface Conversation {
+  localSend: boolean;
   attachments?: ReturnType<typeof createTalkAttachmentDraft>;
   messageActions?: ReturnType<typeof createTalkMessageActions>;
   contact: TalkContact;
@@ -122,6 +124,11 @@ export function createTalkController(options: {
 
   function state(): TalkState {
     return {
+      // Home readback can fail after the first send. Keep unfinished local
+      // work reachable independently of the server's latest contact list.
+      retainedContacts: [...conversations.values()]
+        .filter(entry => entry.localSend || entry.content.length > 0 || !!entry.attachments?.state().items.length)
+        .map(entry => ({ ...entry.contact, last_message: entry.contact.last_message ? { ...entry.contact.last_message } : null })),
       attachments: selected?.attachments?.state().items ?? [],
       attachmentError: selected?.attachments?.state().error ?? "",
       canAddAttachments: active(authority) && !!actorApId && !!selected && !loading && !selected.messageActions?.state() && selected.attachments?.state().canAdd === true,
@@ -494,7 +501,7 @@ export function createTalkController(options: {
     let entry = conversations.get(key);
     if (!entry) {
       entry = {
-        contact, messages: [], content: "", draftRevision: 0, sending: false, uncertain: false,
+        contact, localSend: false, messages: [], content: "", draftRevision: 0, sending: false, uncertain: false,
         readError: "", sendError: "", sendOutcome: 0, confirmed: new Map(),
         hasMore: undefined, nextCursor: null, cursors: new Set(), historyError: "",
         gaps: new Map(),
@@ -770,6 +777,9 @@ export function createTalkController(options: {
     const revision = entry.draftRevision;
     const abort = new AbortController();
     entry.sendAbort = abort;
+    // Navigation is local work, independent of message/read ACK retirement.
+    // It lasts only as long as this account's in-memory conversation map.
+    entry.localSend = true;
     entry.sending = true;
     entry.sendError = "";
     publish();

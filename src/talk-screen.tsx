@@ -159,6 +159,7 @@ export function TalkScreen(props: {
   const [fileSelectionError, setFileSelectionError] = createSignal("");
   let acceptFiles: ((files: readonly File[]) => boolean) | undefined;
   const [state, setState] = createSignal<TalkState>({
+    retainedContacts: [],
     attachments: [], attachmentError: "", canAddAttachments: false,
     messages: [], content: "", loading: false, loadingOlder: false, refreshing: false, gaps: [], hasMore: undefined, historyError: "",
     sending: false, uncertain: false, canSend: false, canManageMessages: false, error: "",
@@ -236,6 +237,11 @@ export function TalkScreen(props: {
     });
   });
   const selected = () => state().selected;
+  const contacts = createMemo(() => {
+    const canonical = props.home?.contacts ?? [];
+    const keys = new Set(canonical.map(contact => JSON.stringify([contact.type, contact.ap_id])));
+    return [...canonical, ...state().retainedContacts.filter(contact => !keys.has(JSON.stringify([contact.type, contact.ap_id])))];
+  });
   const messages = () => state().messages;
   const messageById = createMemo(() => new Map(messages().map(message => [message.id, message])));
   const messageIds = createMemo(() => [...messageById().keys()]);
@@ -552,10 +558,10 @@ export function TalkScreen(props: {
         <Show when={!discovery().visible}>
         <div class="talk-list">
           <Show
-            when={props.home?.contacts.length}
+            when={contacts().length}
             fallback={<p class="empty">まだトークはありません。</p>}
           >
-            <For each={props.home?.contacts}>
+            <For each={contacts()}>
               {(contact) => (
                 <button
                   class="talk-row"

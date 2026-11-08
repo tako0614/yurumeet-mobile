@@ -1,5 +1,13 @@
 # Yurumeet Mobile
 
+Android Back follows the active confirmation dialog, message editor, search,
+conversation or request list. An uncertain send or change is never cancelled
+or resent by Back: its conversation draft and pending state remain available
+after returning to the list. At the root talk list, the listener is removed
+to restore default OS Back. Registration/removal failures expose an explicit
+retry, including after sign-out; default behavior is not guaranteed until
+removal succeeds. Physical Android key/gesture delivery needs separate device testing.
+
 Use **New talk** on the talk list to find a person by name/username or
 `@user@server`. The selected host performs the search; native credentials are
 never sent directly to the remote server. Results display the actor ID, and

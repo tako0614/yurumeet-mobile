@@ -6,6 +6,12 @@ Yurumeet Mobile は、Yurucommu family 共通の API につなぐ、トーク中
 `yurume` の client identity を持ち、Yurucommu Mobile とは別のバンドル・リリースサイクルで進みます。
 iOS / Android 専用で、desktop artifact は配布しません。
 
+Androidの「戻る」は、表示中の確認ダイアログ、メッセージ編集、検索、会話・受信一覧の
+既存の戻る操作を使います。送信・変更の結果が未確認なら、取り消しや再送をせず、会話ごとの
+下書きと確認待ち状態を残して一覧へ戻れます。ルートのトーク一覧ではlistenerを解除し、
+OS標準の戻る操作へ戻します。接続・解除の失敗は画面に表示し、ログアウト後も明示的に再試行できます。
+解除が成功するまでは標準操作の復帰を保証できません。実機のキー・gesture操作は別に検証します。
+
 サーバーへの接続は Takosumi からの引き継ぎ、QR、手入力の HTTPS URL に対応し、初回起動画面からは
 製品の Deploy to Cloudflare フローにも進めます。ログインは OIDC PKCE とホストのパスワードセッションの
 両方に対応します。

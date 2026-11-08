@@ -1,4 +1,6 @@
-import { createEffect, createMemo, createSignal, createUniqueId, For, Index, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createRenderEffect, createSignal, createUniqueId, For, Index, onCleanup, onMount, Show } from "solid-js";
+import type { BackAction } from "./android-back-navigation.ts";
+import { createTalkBackAction } from "./talk-back.ts";
 import {
   formatMobilePreviewDate,
   mobileTextRemaining,
@@ -148,6 +150,7 @@ function MessageEditPanel(props: {
 }
 
 export function TalkScreen(props: {
+  onBackTarget?: (back: BackAction | undefined) => void;
   home?: YurumeetMobileHome;
   session: MobileSession;
   refreshHome: () => Promise<void>;
@@ -204,6 +207,14 @@ export function TalkScreen(props: {
     discoveryController.close();
     queueMicrotask(() => { if (newTalkButton?.isConnected) newTalkButton.focus(); });
   }
+  const goBack = createTalkBackAction({ talk: controller, discovery: discoveryController, closeDiscovery });
+  createRenderEffect(() => {
+    const current = state();
+    props.onBackTarget?.(
+      current.selected || current.requests?.visible || discovery().visible ? goBack : undefined,
+    );
+  });
+  onCleanup(() => props.onBackTarget?.(undefined));
   createEffect(() => {
     controller.updateSession(props.session); controller.updateActor(props.home?.actor.ap_id);
     discoveryController.updateSession(props.session, props.home?.actor.ap_id);

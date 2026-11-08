@@ -1,6 +1,7 @@
-import { batch, createRoot, createSignal, getOwner, onCleanup, type JSX } from "solid-js";
+import { batch, createRoot, createSignal, getOwner, onCleanup, Show, type JSX } from "solid-js";
 import type { NativeBridge, MobileSession } from "@takosjp/mobile-kit";
 import {
+  MobileClientApp,
   type MobileClientAppProps,
   type MobileShellHomeExtraContext,
   type MobileShellMetric,
@@ -17,6 +18,12 @@ import { createTalkHomeLoader } from "./talk-home-loader.ts";
 import { talkNotificationRequest, type TalkNotificationRequest } from "./talk-notification.ts";
 import { talkSessionIdentity } from "./talk-session.ts";
 import { createHostRouteHandoff, type HostRouteNotice } from "./host-route.ts";
+import {
+  createAndroidBackNavigation,
+  type AndroidBackFailure,
+  type AndroidBackRegistrar,
+  type BackAction,
+} from "./android-back-navigation.ts";
 
 const metrics = [
   { label: "トーク", value: (home) => home?.contacts.length },
@@ -24,9 +31,26 @@ const metrics = [
   { label: "リクエスト", value: (home) => home?.requestCount },
 ] satisfies readonly MobileShellMetric<YurumeetMobileHome>[];
 
+export function YurumeetMobileApp(props: {
+  createNativeBridge: () => NativeBridge;
+  registerAndroidBack?: AndroidBackRegistrar;
+}) {
+  const app = createYurumeetMobileApp(props.createNativeBridge, props.registerAndroidBack);
+  onCleanup(() => { void app.disposeAndroidBack(); });
+  return <><app.BackRecovery /><MobileClientApp {...app} /></>;
+}
+
 export function createYurumeetMobileApp(
   createNativeBridge: () => NativeBridge,
-): MobileClientAppProps<YurumeetMobileHome> {
+  registerAndroidBack?: AndroidBackRegistrar,
+): MobileClientAppProps<YurumeetMobileHome> & {
+  BackRecovery: () => JSX.Element;
+  disposeAndroidBack: () => Promise<void>;
+} {
+  const [backFailure, setBackFailure] = createSignal<AndroidBackFailure>();
+  const androidBack = registerAndroidBack
+    ? createAndroidBackNavigation({ register: registerAndroidBack, onFailure: setBackFailure })
+    : undefined;
   const loader = createTalkHomeLoader({ loadHome });
   const [notification, setNotification] = createSignal<TalkNotificationRequest>();
   function resetNotifications() { setNotification(undefined); }
@@ -52,6 +76,15 @@ export function createYurumeetMobileApp(
   }) {
     const [home, setHome] = createSignal(context.home);
     const [session, setSession] = createSignal(context.session);
+    const backOwner = {};
+    const setBackTarget = (back: BackAction | undefined) => {
+      if (back) void androidBack?.setTarget({
+        owner: backOwner, scope: talkSessionIdentity(session()),
+        isActive: context.isActive, back,
+      });
+      else void androidBack?.clear(backOwner);
+    };
+    onCleanup(() => { void androidBack?.clear(backOwner); });
     const release = loader.mount(context, (snapshot) => batch(() => {
       setSession(snapshot.session);
       setHome(snapshot.home);
@@ -65,6 +98,7 @@ export function createYurumeetMobileApp(
           onDismiss={() => setRouteNotice(undefined)}
         />
         <TalkScreen
+          onBackTarget={setBackTarget}
           home={home()}
           session={session()}
           refreshHome={context.refreshHome}
@@ -118,6 +152,16 @@ export function createYurumeetMobileApp(
   }
 
   return {
+    // Remains reachable after the account-owned talk view is retired.
+    BackRecovery: () => <Show when={backFailure()}>
+      <div role="alert">
+        <p>Androidの戻る操作を更新できませんでした。画面内の「戻る」を使い、再接続を試してください。</p>
+        <button type="button" class="text-button" onClick={() => void androidBack?.retry()}>
+          Androidの戻る操作を再接続
+        </button>
+      </div>
+    </Show>,
+    disposeAndroidBack: () => androidBack?.dispose() ?? Promise.resolve(),
     adapter: productAdapter,
     createNativeBridge,
     loadHome: loadSelectedHome,

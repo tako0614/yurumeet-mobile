@@ -124,6 +124,30 @@ The desktop `tauri:dev` and `tauri:build` commands intentionally exit 64. Use
 the `tauri:android:*` or `tauri:ios:*` commands for native execution and
 builds.
 
+### Run Android from the command line
+
+With Android SDK/NDK, a Rust Android target, a generated Android project, and a
+connected device or running emulator, start the app without opening Android Studio.
+Use the device name detected by Tauri, or omit it to choose a target in the CLI.
+
+```sh
+bun run tauri:android:dev "<device-name>"
+```
+
+For a physical device reaching the development server over the LAN, explicitly
+provide the reachable development host IP. `--host` can follow the device name;
+Tauri passes it to the shared Vite configuration as `TAURI_DEV_HOST`.
+
+```sh
+bun run tauri:android:dev "<device-name>" --host "<dev-host-ip>"
+```
+
+Add `--open` only when you want to use Android Studio:
+
+```sh
+bun run tauri:android:dev --open --host "<dev-host-ip>"
+```
+
 `bun run mobile:native-release-check` and
 `bun run mobile:release-evidence-check` define native/store completion. Set
 `VITE_YURUMEET_NOTIFICATION_PUSHER_GATEWAY_URL` only to the public pusher

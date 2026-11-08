@@ -88,6 +88,29 @@ bun run mobile:check
 desktop 向けの `bun run tauri:dev` / `bun run tauri:build` は exit 64 で停止します。native 実行・build は
 `tauri:android:*` または `tauri:ios:*` を使います。
 
+### Androidをコマンドから起動する
+
+Android SDK/NDK、RustのAndroid target、生成済みAndroid projectと、接続済み実機または
+起動済みemulatorを用意した環境では、Android Studioを開かずに起動できます。
+`<device-name>`にはTauriが検出する端末名を指定します。省略するとCLIで起動先を選びます。
+
+```sh
+bun run tauri:android:dev "<device-name>"
+```
+
+実機から開発サーバーへLAN経由で接続する場合は、到達可能な開発ホストのIPを明示します。
+`--host`は端末名に続けて指定でき、共通Vite設定へ`TAURI_DEV_HOST`として渡されます。
+
+```sh
+bun run tauri:android:dev "<device-name>" --host "<dev-host-ip>"
+```
+
+Android Studioで操作したい場合だけ、`--open`を追加してください。
+
+```sh
+bun run tauri:android:dev --open --host "<dev-host-ip>"
+```
+
 ## リリースチェック
 
 - `bun run mobile:native-release-check` — native/store 完成の定義。生成プロジェクト・keystore・push 配線・

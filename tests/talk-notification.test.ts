@@ -15,6 +15,7 @@ const peer: TalkContact = { type: "user", ap_id: "https://peer.example/users/bud
   name: "Buddy", icon_url: null, last_message: null, last_message_at: null, unread_count: 0 };
 const group: TalkContact = { ...peer, type: "community", ap_id: "https://talk.example/groups/room", name: "Room" };
 const request = () => talkNotificationRequest({ session, kind: "tapped", notification: { data: { event_id: event, room_id: object } } })!;
+
 const originalFetch = globalThis.fetch;
 const subjects: ReturnType<typeof createTalkController>[] = [];
 afterEach(() => { subjects.splice(0).forEach(c => c.dispose()); globalThis.fetch = originalFetch; });
@@ -241,3 +242,54 @@ test("a hidden target response cannot open a chat before the visibility listener
   expect(signal?.aborted).toBe(true);
   expect(calls.map(call => call.path)).toEqual(["/api/dm/notification-target"]);
 });
+
+for (const action of ["draft", "edit", "delete"] as const) {
+  test(`a notification switch keeps a conversation with only a ${action} message action reachable`, async () => {
+    const mine = { id: session.hostUrl + "/objects/owned-message", content: "Original", created_at: "2026-11-05T00:00:00Z",
+      sender: { ap_id: me, preferred_username: "me", name: "Me" } };
+    const ownedPath = "/api/dm/messages/" + encodeURIComponent(mine.id), revision = "dm-v1:" + "a".repeat(64);
+    const held = deferred<Response>(), started = deferred<void>();
+    const calls = transport((url, init) => {
+      if (url.pathname === ownedPath) {
+        if (init?.method === "PATCH" || init?.method === "DELETE") { started.resolve();return held.promise; }
+        return Response.json({ message: mine, revision });
+      }
+      if (url.pathname.endsWith("/messages")) return Response.json({ messages: url.pathname === `/api/dm/user/${encodeURIComponent(peer.ap_id)}/messages` ? [mine] : [], has_more: false });
+    }, group);
+    const c = createTalkController({ session, actorApId: me, refreshHome: async () => {}, observedMessageIds: () => [],
+      receive: { isForeground: () => true, schedule: () => () => {} } });
+    subjects.push(c);
+    await c.open(peer);
+    if (action === "delete") await c.beginMessageDelete(mine.id);
+    else { await c.beginMessageEdit(mine.id);c.setMessageEditContent("Retained edit input"); }
+    let saving: Promise<void> | undefined;
+    if (action !== "draft") {
+      saving = action === "edit" ? c.saveMessageEdit() : c.confirmMessageDelete();
+      await started.promise;
+    }
+    try {
+      await c.openNotification(request(), me);
+      expect(c.state().selected).toEqual(group);
+      expect(c.state().content).toBe("");
+      // The current home can omit the old contact. This is the actual source
+      // used by TalkScreen to offer a return path, not a manual reopen oracle.
+      expect(c.state().retainedContacts).toContainEqual(peer);
+      await c.open(peer);
+      expect(c.state().messageAction).toMatchObject({ kind: action === "delete" ? "delete" : "edit",
+        ...(action === "draft" ? { content: "Retained edit input" } : { pending: true }) });
+    } finally {
+      held.resolve(Response.json({ error: "synthetic original ACK unavailable" }, { status: 503 }));
+      await saving;
+    }
+    if (action !== "draft") {
+      expect(c.state().messageAction).toMatchObject({ pending: false, needsReadback: true });
+      expect(c.state().retainedContacts).toContainEqual(peer);
+      await c.saveMessageEdit();await c.confirmMessageDelete();
+      expect(calls.filter(call => call.method === (action === "edit" ? "PATCH" : "DELETE"))).toHaveLength(1);
+      await c.reconcileMessageAction();
+    }
+    c.cancelMessageAction();
+    expect(c.state().messageAction).toBeUndefined();
+    expect(c.state().retainedContacts).not.toContainEqual(peer);
+  });
+}

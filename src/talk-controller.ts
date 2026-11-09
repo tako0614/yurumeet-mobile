@@ -127,7 +127,7 @@ export function createTalkController(options: {
       // Home readback can fail after the first send. Keep unfinished local
       // work reachable independently of the server's latest contact list.
       retainedContacts: [...conversations.values()]
-        .filter(entry => entry.localSend || entry.content.length > 0 || !!entry.attachments?.state().items.length)
+        .filter(entry => entry.localSend || entry.content.length > 0 || !!entry.attachments?.state().items.length || !!entry.messageActions?.state())
         .map(entry => ({ ...entry.contact, last_message: entry.contact.last_message ? { ...entry.contact.last_message } : null })),
       attachments: selected?.attachments?.state().items ?? [],
       attachmentError: selected?.attachments?.state().error ?? "",

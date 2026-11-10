@@ -130,7 +130,10 @@ function MessageEditPanel(props: {
       <MobileComposeField label="編集する本文">
         <textarea ref={field} value={props.action.content} maxlength={5000} disabled={props.action.loading}
           onInput={event => props.setContent(event.currentTarget.value)}
-          onKeyDown={event => { if (event.key === "Escape" && props.action.canCancel) { event.preventDefault(); props.cancel(); } }} />
+          onKeyDown={event => {
+            if (event.isComposing || event.keyCode === 229) return;
+            if (event.key === "Escape" && props.action.canCancel) { event.preventDefault(); props.cancel(); }
+          }} />
       </MobileComposeField>
       <MobileComposeFooter detail={`あと ${Math.max(0, 5000 - props.action.content.trim().length)} 文字`}>
         <button type="submit" class="primary" disabled={!props.action.canSave} aria-busy={props.action.pending}>{props.action.pending ? "保存中…" : "変更を保存"}</button>

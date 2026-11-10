@@ -535,7 +535,13 @@ export function TalkScreen(props: {
           onClick={() => void controller.showRequests()}>メッセージリクエスト（{props.home?.requestCount ?? "…"}）</button>
         <Show when={discovery().visible}>
           <section class="people-search" aria-label="新しいトークの相手を検索" aria-busy={discovery().loading || !!discovery().opening}
-            onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); closeDiscovery(); } }}>
+            onKeyDown={event => {
+              if (event.isComposing || event.keyCode === 229) {
+                if (event.key === "Enter") event.preventDefault();
+                return;
+              }
+              if (event.key === "Escape") { event.preventDefault(); closeDiscovery(); }
+            }}>
             <div class="people-search-heading"><h2>新しいトーク</h2><button type="button" class="text-button" onClick={closeDiscovery}>検索を閉じる</button></div>
             <form onSubmit={event => { event.preventDefault(); void discoveryController.search(); }}>
               <label for={peopleInputId}>相手の名前・ユーザー名</label>

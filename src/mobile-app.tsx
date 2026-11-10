@@ -15,7 +15,7 @@ import {
 import { productAdapter } from "./product.ts";
 import { HostRouteNoticeBanner, TalkScreen } from "./talk-screen.tsx";
 import { createTalkHomeLoader } from "./talk-home-loader.ts";
-import { talkNotificationRequest, type TalkNotificationRequest } from "./talk-notification.ts";
+import { updateTalkNotificationRequest, type TalkNotificationRequest } from "./talk-notification.ts";
 import { talkSessionIdentity } from "./talk-session.ts";
 import { createHostRouteHandoff, type HostRouteNotice } from "./host-route.ts";
 import {
@@ -174,7 +174,7 @@ export function createYurumeetMobileApp(
       if (input.kind !== "tapped") return false;
       // The kit invokes this callback only for its current session/epoch.
       // A cold tap can precede that session's first home read or view mount.
-      setNotification(talkNotificationRequest(input));
+      setNotification(current => updateTalkNotificationRequest(current, input));
       return true;
     },
     sessionUnlock: {

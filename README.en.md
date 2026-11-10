@@ -192,8 +192,10 @@ credential name. Non-ASCII values and anchors are fine.
 - A tap resolves `/api/dm/notification-target` as the signed-in account and opens
   the returned DM or group natively. Event IDs and message object IDs are never
   guessed to be peers. It waits for the authenticated home and foreground view;
-  account changes, view disposal and a later tap retire older work. Receiving a
+  account changes, view disposal and a later valid tap retire older work. Receiving a
   notification alone does not open a chat or mark messages read.
+  A malformed tap while home is pending keeps the valid hint for the same session;
+  a hint from another session is not retained.
 - Moving the app to the background during target resolution cancels that read and keeps the current conversation and draft.
   Late replies cannot open a chat. Return to the foreground and explicitly retry the notification target to continue.
 - An unsupported server, removed target or revoked access shows an error and an

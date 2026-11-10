@@ -21,3 +21,14 @@ export function talkNotificationRequest(input: MobilePushNotificationCallbackInp
   return { sessionKey: talkSessionIdentity(input.session), eventId: data.event_id,
     ...(data.room_id !== undefined ? { objectId: data.room_id } : {}) };
 }
+
+/** Invalid taps cannot erase a valid hint waiting for this session's home. */
+export function updateTalkNotificationRequest(
+  current: TalkNotificationRequest | undefined,
+  input: MobilePushNotificationCallbackInput,
+): TalkNotificationRequest | undefined {
+  if (input.kind !== "tapped") return current;
+  const next = talkNotificationRequest(input);
+  if (next) return next;
+  return current?.sessionKey === talkSessionIdentity(input.session) ? current : undefined;
+}

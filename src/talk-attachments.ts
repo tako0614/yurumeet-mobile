@@ -25,25 +25,35 @@ const extensions: Readonly<Record<string, string>> = {
   "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp", "video/mp4": "mp4", "video/webm": "webm",
 };
 const maxFiles = 8;
-const filename = (file: File) => (file.name.trim() || "添付ファイル").slice(0, 512);
+const filename = (file: Pick<File, "name">) => (file.name.trim() || "添付ファイル").slice(0, 512);
 function selectionError(file: File): string | undefined {
   if (!Object.hasOwn(extensions, file.type)) return "JPEG・PNG・GIF・WebPの画像、MP4・WebMの動画を選んでください。";
   if (file.size === 0) return "空のファイルは添付できません。";
   if (file.size > (file.type.startsWith("video/") ? 40 : 20) * 1024 * 1024) return "画像は20MiB、動画は40MiBまで添付できます。";
 }
 
+/** Structural reference validation only; this does not assert freshness or authorize a send. */
+export function decodeTalkUploadReference(file: Pick<File, "name" | "type">, value: unknown): TalkUpload {
+  const name = filename(file), mime = file.type, extension = Object.hasOwn(extensions, mime) ? extensions[mime] : undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Upload response is not an object");
+  const data = value as Record<string, unknown>;
+  if (typeof data.id !== "string" || !/^[a-f0-9]{1,128}$/u.test(data.id) || !extension || data.content_type !== mime ||
+    data.url !== `/media/${data.id}.${extension}` || data.r2_key !== `uploads/${data.id}.${extension}` ||
+    typeof data.expires_at !== "string" || !Number.isFinite(Date.parse(data.expires_at))) {
+    throw new Error("Upload acknowledgment does not match the selected file and canonical media reference");
+  }
+  return { attachment: { type: "Document", mediaType: mime, url: `/media/${data.id}.${extension}`, r2_key: `uploads/${data.id}.${extension}`, name },
+    expiresAt: data.expires_at };
+}
+
 export function talkUploadResponse(file: File): WireDecoder<TalkUpload> {
-  const name = filename(file), mime = file.type, extension = extensions[mime];
+  const selected = { name: filename(file), type: file.type };
   return { document: "Yurumeet selected file upload", decode(value) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Upload response is not an object");
-    const data = value as Record<string, unknown>;
-    if (typeof data.id !== "string" || !/^[a-f0-9]{1,128}$/u.test(data.id) || !extension || data.content_type !== mime ||
-      data.url !== `/media/${data.id}.${extension}` || data.r2_key !== `uploads/${data.id}.${extension}` ||
-      typeof data.expires_at !== "string" || !Number.isFinite(Date.parse(data.expires_at)) || Date.parse(data.expires_at) <= Date.now()) {
+    const upload = decodeTalkUploadReference(selected, value);
+    if (Date.parse(upload.expiresAt) <= Date.now()) {
       throw new Error("Upload acknowledgment does not match the selected file and canonical media reference");
     }
-    return { attachment: { type: "Document", mediaType: mime, url: `/media/${data.id}.${extension}`, r2_key: `uploads/${data.id}.${extension}`, name },
-      expiresAt: data.expires_at };
+    return upload;
   } };
 }
 

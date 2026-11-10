@@ -117,7 +117,8 @@ test("an expired recovery snapshot requires manual review without erasing uncert
   let key = "", raw = "", clock = Date.UTC(2026, 10, 10);
   const store: MobileSecureStore = { ...base, async set(k, v) { key = k; raw = v; await base.set(k, v); } };
   const recovery = createTalkRecoveryStore({ store, scope, now: () => clock });
-  await recovery.save([{ ...draft, sendState: "uncertain" }]);
+  await recovery.save([{ ...draft, sendState: "uncertain",
+    intent: { attemptId: "local-expiry-one", content: "元の送信本文", attachments: [] } }]);
   clock += 7 * 86400_000 - 1;
   expect((await recovery.load())?.[0].sendState).toBe("uncertain");
   clock++;
@@ -241,16 +242,17 @@ test("media-only pending intent restores canonical references and marks expired 
   const recovery = createTalkRecoveryStore({ store: secureStore(), scope, now: () => clock });
   const upload = { attachment: { type: "Document" as const, mediaType: "image/png", url: "/media/a1.png",
     r2_key: "uploads/a1.png", name: "写真.png" }, expiresAt: new Date(clock + 60_000).toISOString() };
-  await recovery.save([{ ...draft, content: "", sendState: "pending", attachments: [
+  const intent = { attemptId: "local-media-one", content: "", attachments: [upload] };
+  await recovery.save([{ ...draft, content: "", sendState: "pending", intent, attachments: [
     { phase: "ready", upload },
     { phase: "needs-reselection", name: "動画.mp4", mediaType: "video/mp4", size: 123, reason: "unknown" },
   ] }]);
-  expect((await recovery.load())?.[0]).toEqual({ ...draft, content: "", sendState: "pending", attachments: [
+  expect((await recovery.load())?.[0]).toEqual({ ...draft, content: "", sendState: "pending", intent, attachments: [
     { phase: "ready", upload },
     { phase: "needs-reselection", name: "動画.mp4", mediaType: "video/mp4", size: 123, reason: "unknown" },
   ] });
   clock += 60_000;
-  expect((await recovery.load())?.[0]).toEqual({ ...draft, content: "", sendState: "pending", attachments: [
+  expect((await recovery.load())?.[0]).toEqual({ ...draft, content: "", sendState: "pending", intent, attachments: [
     { phase: "needs-reselection", name: "写真.png", mediaType: "image/png", reason: "expired" },
     { phase: "needs-reselection", name: "動画.mp4", mediaType: "video/mp4", size: 123, reason: "unknown" },
   ] });
@@ -332,4 +334,31 @@ test("a queued snapshot which expires before its write is not persisted", async 
   const [, failure] = await Promise.all([busy, saving]);
   expect(failure).toMatchObject({ code: "expired" });
   expect(await recovery.load()).toBeNull();
+});
+
+test("an uncertain send keeps its original payload separate from a newer draft", async () => {
+  const recovery = createTalkRecoveryStore({ store: secureStore(), scope });
+  const sentMedia = { attachment: { type: "Document" as const, mediaType: "image/png", url: "/media/b2.png",
+    r2_key: "uploads/b2.png", name: "以前の写真.png" }, expiresAt: new Date(Date.now() - 1000).toISOString() };
+  const pending = { ...draft, content: "次に送る下書き", sendState: "uncertain" as const,
+    intent: { attemptId: "local-attempt-one", content: "実際に送った本文", attachments: [sentMedia] } };
+  await recovery.save([pending]);
+  expect((await recovery.load())?.[0]).toEqual({ ...draft, content: "次に送る下書き", sendState: "uncertain",
+    intent: { attemptId: "local-attempt-one", content: "実際に送った本文", attachments: [sentMedia] } });
+  await recovery.save([{ ...pending, content: "" }]);
+  expect((await recovery.load())?.[0]).toEqual({ ...pending, content: "" });
+});
+
+test("pending states require an original intent and draft states cannot silently discard one", async () => {
+  const recovery = createTalkRecoveryStore({ store: secureStore(), scope });
+  await recovery.save([draft]);
+  for (const invalid of [
+    [{ ...draft, sendState: "pending" }],
+    [{ ...draft, sendState: "uncertain", intent: { attemptId: "one", content: "", attachments: [] } }],
+    [{ ...draft, intent: { attemptId: "one", content: "前回の送信", attachments: [] } }],
+    [{ ...draft, sendState: "pending", intent: { attemptId: "one", content: "前回の送信", attachments: [], accessToken: "synthetic-private" } }],
+  ]) {
+    await expect(recovery.save(invalid as unknown as readonly TalkRecoveryDraft[])).rejects.toMatchObject({ code: "invalid-data" });
+    expect(await recovery.load()).toEqual([draft]);
+  }
 });

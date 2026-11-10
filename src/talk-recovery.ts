@@ -69,12 +69,24 @@ export interface TalkRecoveryScope {
   readonly apiBaseUrl?: string;
 }
 
-export interface TalkRecoveryDraft {
+interface TalkRecoveryDraftFields {
   readonly contact: { readonly type: "user" | "community"; readonly apId: string };
   readonly content: string;
-  readonly sendState: "draft" | "pending" | "uncertain";
   readonly attachments: readonly TalkRecoveryAttachment[];
 }
+
+/** Original attempted payload, retained for manual reconciliation, never replay authority. */
+export interface TalkRecoveryIntent {
+  /** Local correlation only; it is not a server idempotency key or receipt. */
+  readonly attemptId: string;
+  readonly content: string;
+  readonly attachments: readonly TalkUpload[];
+}
+
+export type TalkRecoveryDraft = TalkRecoveryDraftFields & (
+  | { readonly sendState: "draft"; readonly intent?: never }
+  | { readonly sendState: "pending" | "uncertain"; readonly intent: TalkRecoveryIntent }
+);
 
 export type TalkRecoveryAttachment =
   | { readonly phase: "ready"; readonly upload: TalkUpload }
@@ -85,22 +97,38 @@ function attachmentName(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 512 && value.trim() === value;
 }
 
+function verifiedUpload(value: unknown): TalkUpload {
+  if (!record(value, ["attachment", "expiresAt"])) throw new TalkRecoveryError("invalid-data");
+  const attachment = value.attachment;
+  if (!record(attachment, ["type", "mediaType", "url", "r2_key", "name"]) || attachment.type !== "Document" ||
+    typeof attachment.url !== "string" || typeof attachment.mediaType !== "string" || !attachmentName(attachment.name)) throw new TalkRecoveryError("invalid-data");
+  try {
+    const id = /^\/media\/([a-f0-9]{1,128})\.[a-z0-9]+$/u.exec(attachment.url)?.[1];
+    return decodeTalkUploadReference({ name: attachment.name, type: attachment.mediaType }, {
+      id, content_type: attachment.mediaType, url: attachment.url, r2_key: attachment.r2_key, expires_at: value.expiresAt,
+    });
+  } catch { throw new TalkRecoveryError("invalid-data"); }
+}
+
+function verifiedIntent(value: unknown): TalkRecoveryIntent {
+  if (!record(value, ["attemptId", "content", "attachments"]) || typeof value.attemptId !== "string" ||
+    !/^[A-Za-z0-9_-]{1,128}$/u.test(value.attemptId) || typeof value.content !== "string" || value.content.length > 2000 ||
+    !Array.isArray(value.attachments) || value.attachments.length > 8 || (!value.content.trim() && !value.attachments.length)) {
+    throw new TalkRecoveryError("invalid-data");
+  }
+  // Historical references retain the attempted bytes even after expiry. They
+  // are deliberately not represented as currently-ready draft attachments.
+  return { attemptId: value.attemptId, content: value.content, attachments: Array.from(value.attachments, verifiedUpload) };
+}
+
 function verifiedAttachments(value: unknown, time: number): TalkRecoveryAttachment[] {
   if (!Array.isArray(value) || value.length > 8) throw new TalkRecoveryError("invalid-data");
   return Array.from(value, item => {
-    if (record(item, ["phase", "upload"]) && item.phase === "ready" && record(item.upload, ["attachment", "expiresAt"])) {
-      const upload = item.upload, attachment = upload.attachment;
-      if (!record(attachment, ["type", "mediaType", "url", "r2_key", "name"]) || attachment.type !== "Document" ||
-        typeof attachment.url !== "string" || typeof attachment.mediaType !== "string" || !attachmentName(attachment.name)) throw new TalkRecoveryError("invalid-data");
-      try {
-        const id = /^\/media\/([a-f0-9]{1,128})\.[a-z0-9]+$/u.exec(attachment.url)?.[1];
-        const parsed = decodeTalkUploadReference({ name: attachment.name, type: attachment.mediaType }, {
-          id, content_type: attachment.mediaType, url: attachment.url, r2_key: attachment.r2_key, expires_at: upload.expiresAt,
-        });
-        return Date.parse(parsed.expiresAt) <= time
-          ? { phase: "needs-reselection", name: parsed.attachment.name, mediaType: parsed.attachment.mediaType, reason: "expired" }
-          : { phase: "ready", upload: parsed };
-      } catch { throw new TalkRecoveryError("invalid-data"); }
+    if (record(item, ["phase", "upload"]) && item.phase === "ready") {
+      const parsed = verifiedUpload(item.upload);
+      return Date.parse(parsed.expiresAt) <= time
+        ? { phase: "needs-reselection", name: parsed.attachment.name, mediaType: parsed.attachment.mediaType, reason: "expired" }
+        : { phase: "ready", upload: parsed };
     }
     if (record(item, ["phase", "name", "mediaType", "size", "reason"]) && item.phase === "needs-reselection" && attachmentName(item.name) &&
       typeof item.mediaType === "string" && item.mediaType.length <= 128 && !/[\u0000-\u001f\u007f]/u.test(item.mediaType) &&
@@ -117,18 +145,24 @@ function verifiedDrafts(value: unknown, time: number): TalkRecoveryDraft[] {
   if (!Array.isArray(value) || value.length > 100) throw new TalkRecoveryError("invalid-data");
   const result: TalkRecoveryDraft[] = [], contacts = new Set<string>();
   for (const item of value) {
-    if (!record(item, ["contact", "content", "sendState", "attachments"]) ||
+    if (!record(item, ["contact", "content", "sendState", "attachments", "intent"]) ||
       !record(item.contact, ["type", "apId"]) || (item.contact.type !== "user" && item.contact.type !== "community") ||
       !isTalkNotificationId(item.contact.apId) || typeof item.content !== "string" || item.content.length > 2000 ||
       (item.sendState !== "draft" && item.sendState !== "pending" && item.sendState !== "uncertain") ||
-      !Array.isArray(item.attachments) || (!item.content.trim() && !item.attachments.length)) {
+      !Array.isArray(item.attachments)) {
       throw new TalkRecoveryError("invalid-data");
     }
     const contactKey = JSON.stringify([item.contact.type, item.contact.apId]);
     if (contacts.has(contactKey)) throw new TalkRecoveryError("invalid-data");
     contacts.add(contactKey);
-    result.push({ contact: { type: item.contact.type, apId: item.contact.apId }, content: item.content,
-      sendState: item.sendState, attachments: verifiedAttachments(item.attachments, time) });
+    const base: TalkRecoveryDraftFields = { contact: { type: item.contact.type, apId: item.contact.apId }, content: item.content,
+      attachments: verifiedAttachments(item.attachments, time) };
+    if (item.sendState === "draft") {
+      if (item.intent !== undefined || (!item.content.trim() && !item.attachments.length)) throw new TalkRecoveryError("invalid-data");
+      result.push({ ...base, sendState: "draft" });
+    } else {
+      result.push({ ...base, sendState: item.sendState, intent: verifiedIntent(item.intent) });
+    }
   }
   return result;
 }

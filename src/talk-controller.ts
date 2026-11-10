@@ -3,6 +3,7 @@ import type { TalkMessagePage, TalkRequest } from "./talk-response.ts";
 import type { TalkNotificationRequest } from "./talk-notification.ts";
 import { createTalkMessageActions, type TalkMessageActionState } from "./talk-message-actions.ts";
 import { createTalkAttachmentDraft, type TalkDraftAttachment } from "./talk-attachments.ts";
+import type { createTalkRecoveryStore, TalkRecoveryDraft, TalkRecoveryIntent } from "./talk-recovery.ts";
 import {
   appendUniqueMobileItemsById,
   prependUniqueMobileItemsByKey,
@@ -69,6 +70,7 @@ interface Conversation {
   draftRevision: number;
   sending: boolean;
   uncertain: boolean;
+  sendIntent?: TalkRecoveryIntent;
   sendAbort?: AbortController;
   readError: string;
   sendError: string;
@@ -93,6 +95,8 @@ export function createTalkController(options: {
   onChange?: (state: TalkState) => void;
   isActive?: () => boolean;
   observedMessageIds: () => readonly string[];
+  /** Product-owned durable storage; it supplies neither authorization nor a send receipt. */
+  recovery?: Pick<ReturnType<typeof createTalkRecoveryStore>, "save">;
   receive?: {
     isForeground: () => boolean;
     canMarkRead?: () => boolean;
@@ -105,6 +109,10 @@ export function createTalkController(options: {
   let authority = 0;
   let view = 0;
   let disposed = false;
+  // A recovery port belongs to this controller's initial credential epoch.
+  // A replacement epoch must construct its own controller/verified port.
+  let recoveryRetired = false;
+  let recoveryRevision = 0;
   let selected: Conversation | undefined;
   let loading = false;
   let loadingOlder = false;
@@ -163,8 +171,29 @@ export function createTalkController(options: {
 
   function canSend(entry: Conversation | undefined): boolean {
     const draft = entry?.attachments?.snapshot();
-    return active(authority) && !!entry && !!draft && !loading && !entry.sending && !entry.uncertain && !entry.messageActions?.state() &&
+    return active(authority) && !recoveryRetired && !!entry && !!draft && !loading && !entry.sending && !entry.uncertain && !entry.messageActions?.state() &&
       (canSubmitMobileText({ value: entry.content, maxLength: 2000 }) || (!entry.content.trim() && draft.attachments.length > 0));
+  }
+
+  function recoveryDrafts(): TalkRecoveryDraft[] {
+    const drafts: TalkRecoveryDraft[] = [];
+    for (const entry of conversations.values()) {
+      const attachments = entry.attachments?.recoverySnapshot() ?? [];
+      const base = { contact: { type: entry.contact.type, apId: entry.contact.ap_id }, content: entry.content, attachments };
+      if (entry.sendIntent) drafts.push({ ...base, sendState: entry.sending && !entry.uncertain ? "pending" : "uncertain", intent: entry.sendIntent });
+      else if (entry.content.trim() || attachments.length) drafts.push({ ...base, sendState: "draft" });
+    }
+    return drafts;
+  }
+
+  async function checkpointRecovery(expected: number) {
+    if (!options.recovery) return;
+    let revision: number;
+    do {
+      if (!active(expected)) return;
+      revision = recoveryRevision;
+      await options.recovery.save(recoveryDrafts());
+    } while (active(expected) && recoveryRevision !== revision);
   }
 
   function active(expected: number) {
@@ -512,7 +541,7 @@ export function createTalkController(options: {
       entry.attachments = createTalkAttachmentDraft({
         active: () => !disposed && authority === expected && conversations.get(key) === owned,
         upload: (file, signal) => uploadTalkAttachment(session, file, signal),
-        onChange: publish,
+        onChange: () => { recoveryRevision++; publish(); },
       });
       entry.messageActions = createTalkMessageActions({
         contact: { type: owned.contact.type, ap_id: owned.contact.ap_id },
@@ -749,6 +778,7 @@ export function createTalkController(options: {
     if (disposed || !selected || selected.content === value) return;
     selected.content = value;
     selected.draftRevision += 1;
+    recoveryRevision++;
     publish();
   }
 
@@ -775,6 +805,11 @@ export function createTalkController(options: {
     const contact = entry.contact;
     const content = entry.content;
     const revision = entry.draftRevision;
+    if (options.recovery) {
+      entry.sendIntent = { attemptId: crypto.randomUUID(), content,
+        attachments: (entry.attachments?.recoverySnapshot() ?? []).flatMap(item => item.phase === "ready" ? [item.upload] : []) };
+      recoveryRevision++;
+    }
     const abort = new AbortController();
     entry.sendAbort = abort;
     // Navigation is local work, independent of message/read ACK retirement.
@@ -784,12 +819,23 @@ export function createTalkController(options: {
     entry.sendError = "";
     publish();
     let accepted = false;
+    let dispatched = false;
     try {
+      if (options.recovery) {
+        await checkpointRecovery(expected);
+        if (!active(expected)) return;
+        if (entry.sendIntent?.attachments.some(upload => Date.parse(upload.expiresAt) <= Date.now())) {
+          throw new Error("添付の期限が切れたため送信しませんでした。もう一度準備してください。");
+        }
+      }
+      dispatched = true;
       const message = contact.type === "community"
         ? await sendCommunityMessage(requestSession, contact.ap_id, content, abort.signal, draft.attachments, actorApId)
         : await sendUserMessage(requestSession, contact.ap_id, content, abort.signal, draft.attachments, actorApId);
       if (!active(expected)) return;
       accepted = true;
+      entry.sendIntent = undefined;
+      recoveryRevision++;
       entry.confirmed.set(message.id, message);
       entry.messages = appendUniqueMobileItemsById(entry.messages, [message]);
       entry.sendOutcome += 1;
@@ -802,13 +848,22 @@ export function createTalkController(options: {
     } catch (cause) {
       if (!active(expected)) return;
       entry.sendOutcome += 1;
-      entry.uncertain = isUncertainMessageSend(cause);
+      entry.uncertain = dispatched && isUncertainMessageSend(cause);
+      if (!entry.uncertain) entry.sendIntent = undefined;
+      recoveryRevision++;
       entry.sendError = errorMessage(cause, "メッセージを送れませんでした。");
     } finally {
       if (entry.sendAbort === abort) entry.sendAbort = undefined;
       if (active(expected)) {
-        entry.sending = false;
-        publish();
+        if (dispatched && options.recovery) {
+          try { await checkpointRecovery(expected); }
+          catch {
+            if (active(expected)) entry.sendError = accepted
+              ? "送信は確認済みですが、下書きの保存を確認できませんでした。再送せず接続を確認してください。"
+              : "送信結果と下書きの保存を確認できませんでした。自動再送は行いません。";
+          }
+        }
+        if (active(expected)) { entry.sending = false; publish(); }
       }
     }
     // A confirmed POST is separate from reloading root counts. A failing
@@ -844,6 +899,7 @@ export function createTalkController(options: {
   }
 
   function retireConversations() {
+    recoveryRetired = !!options.recovery;
     stopRequests();
     requestItems = [];
     requestError = "";

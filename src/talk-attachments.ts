@@ -1,4 +1,5 @@
 import { MobileApiError, type WireDecoder } from "@takosjp/mobile-kit";
+import type { TalkRecoveryAttachment } from "./talk-recovery.ts";
 
 export interface TalkMessageAttachment {
   readonly type: "Document";
@@ -95,6 +96,12 @@ export function createTalkAttachmentDraft(options: {
     if (items.some(item => item.phase !== "ready" || !item.upload || expired(item))) return undefined;
     return { ids: items.map(item => item.id), attachments: items.map(item => ({ ...item.upload!.attachment })) };
   }
+  function recoverySnapshot(): TalkRecoveryAttachment[] {
+    return items.map(item => item.phase === "ready" && item.upload
+      ? { phase: "ready", upload: item.upload }
+      : { phase: "needs-reselection", name: filename(item.file), mediaType: item.file.type, size: item.file.size,
+        reason: item.phase === "unknown" ? "unknown" : "unavailable" });
+  }
   function pump() {
     if (!active() || flight) return;
     const item = items.find(candidate => candidate.phase === "queued");
@@ -142,5 +149,5 @@ export function createTalkAttachmentDraft(options: {
   }
   function commit(ids: readonly number[]) { if (active()) { items = items.filter(item => !ids.includes(item.id)); notify(); } }
   function dispose() { disposed = true; clearTimeout(expiryTimer); expiryTimer = undefined; flight?.abort.abort(); flight = undefined; items = []; error = ""; }
-  return { state, snapshot, add, remove, retry, commit, dispose };
+  return { state, snapshot, recoverySnapshot, add, remove, retry, commit, dispose };
 }

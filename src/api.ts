@@ -109,6 +109,12 @@ export async function loadTalkRequestContact(session: MobileSession, senderApId:
     notificationContactResponse({ type: "user", ap_id: senderApId }), { signal });
 }
 
+/** Resolve a saved recovery hint through the same authenticated canonical contact route. */
+export async function loadTalkRecoveryContact(session: MobileSession, target: Pick<TalkContact, "type" | "ap_id">, signal?: AbortSignal) {
+  if ((target.type !== "user" && target.type !== "community") || !isTalkNotificationId(target.ap_id)) throw new Error("保存した相手の情報を確認できませんでした。");
+  return response(session, `/api/dm/contact/${encodeURIComponent(target.ap_id)}`, notificationContactResponse(target), { signal });
+}
+
 export async function searchTalkPeople(session: MobileSession, query: string, offset = 0, signal?: AbortSignal) {
   const term = query.trim();
   if (!term || term.length > 256 || /[\u0000-\u001f\u007f]/u.test(term) ||

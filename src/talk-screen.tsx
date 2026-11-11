@@ -22,6 +22,7 @@ import { createTalkController, type TalkState } from "./talk-controller.ts";
 import { createTalkDiscoveryController, type TalkDiscoveryState } from "./talk-discovery.ts";
 import { talkSessionIdentity } from "./talk-session.ts";
 import { TalkMedia } from "./talk-media.tsx";
+import type { createTalkRecoveryStore } from "./talk-recovery.ts";
 import type { TalkNotificationRequest } from "./talk-notification.ts";
 import type { TalkRequest } from "./talk-response.ts";
 import type { TalkMessageActionState } from "./talk-message-actions.ts";
@@ -160,6 +161,7 @@ export function TalkScreen(props: {
   isActive?: () => boolean;
   notificationRequest?: TalkNotificationRequest;
   onNotificationConsumed?: (request: TalkNotificationRequest) => void;
+  recovery?: ReturnType<typeof createTalkRecoveryStore>;
 }) {
   const [foreground, setForeground] = createSignal(document.visibilityState !== "hidden", { equals: false });
   const [fileSelectionError, setFileSelectionError] = createSignal("");
@@ -177,6 +179,7 @@ export function TalkScreen(props: {
     searched: false, loading: false, opening: undefined, hasMore: false, error: "" });
   const controller = createTalkController({
     session: props.session,
+    recovery: props.recovery,
     actorApId: props.home?.actor.ap_id,
     refreshHome: () => props.refreshHome(),
     onChange: next => {
@@ -236,16 +239,21 @@ export function TalkScreen(props: {
   });
   onCleanup(() => { discoveryController.dispose(); controller.dispose(); });
   onMount(() => {
+    void controller.restoreRecovery();
     const update = () => {
+      if (document.visibilityState === "hidden") void controller.flushRecovery();
       setForeground(document.visibilityState !== "hidden"); controller.foregroundChanged();
       if (document.visibilityState === "hidden") discoveryController.suspend();
     };
     const readVisible = () => controller.readVisible();
     document.addEventListener("visibilitychange", update);
+    const persist = () => { void controller.flushRecovery(); };
+    window.addEventListener("pagehide", persist);
     window.addEventListener("online", update);
     window.addEventListener("scroll", readVisible, { passive: true });
     onCleanup(() => {
       document.removeEventListener("visibilitychange", update);
+      window.removeEventListener("pagehide", persist);
       window.removeEventListener("online", update);
       window.removeEventListener("scroll", readVisible);
     });
@@ -288,6 +296,24 @@ export function TalkScreen(props: {
 
   return (
     <div class="talk-surface" ref={surface}>
+      <Show when={state().recovery}>
+        {recovery => <>
+          <Show when={recovery().loading || recovery().saving}><p role="status">{recovery().loading ? "保存した下書きを確認中…" : "下書きを保存中…"}</p></Show>
+          <Show when={recovery().error}><div role="alert" class="talk-error">
+            <p>{recovery().error}</p>
+            <button type="button" class="text-button" disabled={recovery().loading || recovery().saving}
+              onClick={() => void controller.flushRecovery()}>下書きの確認・保存を再試行</button>
+          </div></Show>
+          <Show when={!selected() && recovery().drafts.length}>
+            <MobilePreviewSection title="保存した下書き・未確認の送信">
+              <For each={recovery().drafts}>{draft => <div class="message-action-buttons">
+                <span>{draft.contact.apId}</span>
+                <button type="button" class="text-button" onClick={() => void controller.openRecovered(draft)}>相手を確認して開く</button>
+              </div>}</For>
+            </MobilePreviewSection>
+          </Show>
+        </>}
+      </Show>
       <Show when={state().notification}>
         {(notice) => <div role="status" class="talk-error">
           <p>{notice().loading ? "通知先のトークを確認中…" : notice().error}</p>
@@ -469,6 +495,14 @@ export function TalkScreen(props: {
               <Show when={state().uncertain}>
                 <p role="status">送信結果が未確認です。トークを更新し、同じ内容が届いていないか確認してから操作してください。</p>
               </Show>
+              <Show when={state().recovery?.intent}>{intent => <div role="status">
+                <p>再起動前の送信結果は未確認です。履歴と元の内容を確認してください。</p>
+                <p class="message-delete-preview">{intent().content || "本文なし"}</p>
+                <For each={intent().attachments}>{upload => <p>{upload.attachment.name}</p>}</For>
+                <button type="button" class="text-button" disabled={!state().recovery?.canConfirmReview}
+                  onClick={() => void controller.confirmRecoveryReview()}>履歴と元の内容を確認した・次の送信を許可</button>
+                <small>この操作は届いたことを確定せず、自動再送もしません。</small>
+              </div>}</Show>
               <MobileComposeForm
                 onSubmit={(event) => {
                   event.preventDefault();
@@ -478,6 +512,7 @@ export function TalkScreen(props: {
                 <MobileComposeField label="本文">
                   <textarea
                     maxlength={2000}
+                    disabled={!!state().recovery && !state().recovery?.ready}
                     value={content()}
                     onInput={(event) => controller.setDraft(event.currentTarget.value)}
                   />

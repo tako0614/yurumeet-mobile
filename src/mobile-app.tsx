@@ -1,5 +1,5 @@
-import { batch, createRoot, createSignal, getOwner, onCleanup, Show, type JSX } from "solid-js";
-import type { NativeBridge, MobileSession } from "@takosjp/mobile-kit";
+import { batch, createEffect, createRoot, createSignal, getOwner, onCleanup, Show, type JSX } from "solid-js";
+import { loadMobileAccounts, mobileAccountIdentity, type NativeBridge, type MobileSession, type MobileRetiredAccountScope } from "@takosjp/mobile-kit";
 import {
   MobileClientApp,
   type MobileClientAppProps,
@@ -17,6 +17,8 @@ import { HostRouteNoticeBanner, TalkScreen } from "./talk-screen.tsx";
 import { createTalkHomeLoader } from "./talk-home-loader.ts";
 import { updateTalkNotificationRequest, type TalkNotificationRequest } from "./talk-notification.ts";
 import { talkSessionIdentity } from "./talk-session.ts";
+import { createTalkRecoveryAccounts } from "./talk-recovery-account.ts";
+import type { createTalkRecoveryStore } from "./talk-recovery.ts";
 import { createHostRouteHandoff, type HostRouteNotice } from "./host-route.ts";
 import {
   createAndroidBackNavigation,
@@ -47,6 +49,27 @@ export function createYurumeetMobileApp(
   BackRecovery: () => JSX.Element;
   disposeAndroidBack: () => Promise<void>;
 } {
+  let bridge: NativeBridge | undefined;
+  const sharedBridge = () => bridge ??= createNativeBridge();
+  let recoveryAccounts: ReturnType<typeof createTalkRecoveryAccounts> | undefined;
+  const recovery = () => recoveryAccounts ??= createTalkRecoveryAccounts({ store: sharedBridge().secureStore });
+  const [cleanupFailures, setCleanupFailures] = createSignal<readonly MobileRetiredAccountScope[]>([]);
+  const [cleaning, setCleaning] = createSignal(false);
+  async function cleanupScope(scope: MobileRetiredAccountScope) {
+    try {
+      await recovery().retire(scope);
+      setCleanupFailures(rows => rows.filter(row => row.id !== scope.id || row.hostUrl !== scope.hostUrl));
+    } catch {
+      setCleanupFailures(rows => rows.some(row => row.id === scope.id && row.hostUrl === scope.hostUrl) ? rows : [...rows, scope]);
+      throw new Error("サインアウトしましたが、このアカウントの下書き削除を確認できませんでした。");
+    }
+  }
+  async function retryCleanup() {
+    if (cleaning()) return;
+    setCleaning(true);
+    try { for (const scope of cleanupFailures()) { try { await cleanupScope(scope); } catch { /* The exact row remains retryable. */ } } }
+    finally { setCleaning(false); }
+  }
   const [backFailure, setBackFailure] = createSignal<AndroidBackFailure>();
   const androidBack = registerAndroidBack
     ? createAndroidBackNavigation({ register: registerAndroidBack, onFailure: setBackFailure })
@@ -76,6 +99,30 @@ export function createYurumeetMobileApp(
   }) {
     const [home, setHome] = createSignal(context.home);
     const [session, setSession] = createSignal(context.session);
+    const [binding, setBinding] = createSignal<{ key: string; store: ReturnType<typeof createTalkRecoveryStore> }>();
+    const [bindingError, setBindingError] = createSignal("");
+    const [bindingRetry, setBindingRetry] = createSignal(0);
+    let selectionEpoch = 0, selectedSession = "";
+    createEffect(() => {
+      bindingRetry();
+      const currentSession = session(), currentHome = home(), identity = talkSessionIdentity(currentSession);
+      if (selectedSession !== identity) { selectedSession = identity; setBinding(undefined); }
+      const epoch = ++selectionEpoch;
+      if (!currentHome) return;
+      let live = true;
+      onCleanup(() => { live = false; });
+      void (async () => {
+        try {
+          const accounts = await loadMobileAccounts({ adapter: productAdapter, nativeBridge: sharedBridge() });
+          if (!live || epoch !== selectionEpoch || !context.isActive()) return;
+          const row = accounts.accounts.find(row => row.id === accounts.activeId);
+          if (!row || row.product !== currentSession.product || mobileAccountIdentity(row) !== mobileAccountIdentity(currentSession)) throw new Error();
+          const key = JSON.stringify([identity, row.id, currentHome.actor.ap_id]);
+          const store = recovery().select({ accounts, session: currentSession, actorApId: currentHome.actor.ap_id });
+          setBinding(previous => previous?.key === key ? previous : { key, store }); setBindingError("");
+        } catch { if (live && epoch === selectionEpoch) setBindingError("このアカウントの安全な下書き保存先を確認できませんでした。接続と端末の保存機能を確認してください。"); }
+      })();
+    });
     const backOwner = {};
     const setBackTarget = (back: BackAction | undefined) => {
       if (back) void androidBack?.setTarget({
@@ -97,15 +144,19 @@ export function createYurumeetMobileApp(
           session={session()}
           onDismiss={() => setRouteNotice(undefined)}
         />
-        <TalkScreen
+        <Show when={binding()} keyed fallback={<div role="status">
+          <p>{bindingError() || "安全な下書き保存先を確認中…"}</p>
+          <Show when={bindingError()}><button type="button" class="text-button" onClick={() => setBindingRetry(value => value + 1)}>保存先を再確認</button></Show>
+        </div>}>{selected => <TalkScreen
           onBackTarget={setBackTarget}
           home={home()}
           session={session()}
+          recovery={selected.store}
           refreshHome={context.refreshHome}
           isActive={context.isActive}
           notificationRequest={notification()}
           onNotificationConsumed={(request) => setNotification(current => current === request ? undefined : current)}
-        />
+        />}</Show>
       </>
     );
   }
@@ -153,17 +204,22 @@ export function createYurumeetMobileApp(
 
   return {
     // Remains reachable after the account-owned talk view is retired.
-    BackRecovery: () => <Show when={backFailure()}>
+    BackRecovery: () => <><Show when={cleanupFailures().length}>
+      <div role="alert"><p>サインアウト済みアカウントの下書き削除を確認できませんでした。</p>
+        <button type="button" class="text-button" disabled={cleaning()} onClick={() => void retryCleanup()}>下書きの削除を再試行</button>
+      </div>
+    </Show><Show when={backFailure()}>
       <div role="alert">
         <p>Androidの戻る操作を更新できませんでした。画面内の「戻る」を使い、再接続を試してください。</p>
         <button type="button" class="text-button" onClick={() => void androidBack?.retry()}>
           Androidの戻る操作を再接続
         </button>
       </div>
-    </Show>,
+    </Show></>,
     disposeAndroidBack: () => androidBack?.dispose() ?? Promise.resolve(),
     adapter: productAdapter,
-    createNativeBridge,
+    createNativeBridge: sharedBridge,
+    onAccountScopeRetired: cleanupScope,
     loadHome: loadSelectedHome,
     registerPush,
     unregisterPush,

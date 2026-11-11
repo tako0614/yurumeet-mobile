@@ -66,7 +66,15 @@ retaining its pending send and draft. Sign-out or a change of credentials or API
 sends and cached conversation data, so late responses cannot appear in the next account.
 Conversations with drafts or an explicit send action in this app remain reachable from the list if home refresh fails.
 These local routes do not assert that the server retains history or accepted the send.
-This recovery lasts for the current app lifetime; it does not persist drafts across app termination or reload.
+Drafts are saved through the existing secure storage after a 150 ms input pause and restored for the same saved account after restart or reload.
+Sending waits when secure storage or the saved snapshot cannot be verified; retry the recovery check or save explicitly.
+The last input may be lost if the app terminates before its write completes. File bytes are not persisted.
+An interrupted or unknown send retains its original body/media separately from newer input and is never replayed automatically.
+Review the history and original payload, then explicitly allow the next send. This decision does not confirm delivery.
+Saved contacts are resolved through the authenticated API; expired or unfinished media requires selecting the original file again.
+Storage is partitioned by host, saved account row, verified actor and API root. Switching accounts preserves drafts;
+sign-out or authority eviction deletes only the removed row. A failed purge remains visible after sign-out with an explicit retry.
+Recovery creates no server ACK or idempotency authority. OS crash, Stronghold and device update/rollback qualification are separate.
 
 Own DM messages expose native edit and confirmed delete actions. A fresh author-only single-message read supplies
 the exact conditional revision; compose and edit drafts remain separate, including newer input during a save ACK.

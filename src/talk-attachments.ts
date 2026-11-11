@@ -27,7 +27,7 @@ const extensions: Readonly<Record<string, string>> = {
 };
 const maxFiles = 8;
 const filename = (file: Pick<File, "name">) => (file.name.trim() || "添付ファイル").slice(0, 512);
-function selectionError(file: File): string | undefined {
+function selectionError(file: Pick<File, "name" | "type" | "size">): string | undefined {
   if (!Object.hasOwn(extensions, file.type)) return "JPEG・PNG・GIF・WebPの画像、MP4・WebMの動画を選んでください。";
   if (file.size === 0) return "空のファイルは添付できません。";
   if (file.size > (file.type.startsWith("video/") ? 40 : 20) * 1024 * 1024) return "画像は20MiB、動画は40MiBまで添付できます。";
@@ -60,7 +60,8 @@ export function talkUploadResponse(file: File): WireDecoder<TalkUpload> {
 
 interface Item {
   id: number;
-  file: File;
+  file: Pick<File, "name" | "type" | "size">;
+  missingFile?: boolean;
   phase: "queued" | "uploading" | "ready" | "failed" | "unknown";
   upload?: TalkUpload;
   error?: string;
@@ -89,7 +90,7 @@ export function createTalkAttachmentDraft(options: {
       id: item.id, name: filename(item.file), size: item.file.size, phase: expired(item) ? "expired" : item.phase,
       ...(item.upload ? { attachment: item.upload.attachment } : {}),
       error: expired(item) ? "添付の期限が切れました。もう一度準備してください。" : item.error,
-      canRetry: !selectionError(item.file) && (expired(item) || item.phase === "failed" || item.phase === "unknown"),
+      canRetry: !item.missingFile && !selectionError(item.file) && (expired(item) || item.phase === "failed" || item.phase === "unknown"),
     })) };
   }
   function snapshot() {
@@ -102,6 +103,15 @@ export function createTalkAttachmentDraft(options: {
       : { phase: "needs-reselection", name: filename(item.file), mediaType: item.file.type, size: item.file.size,
         reason: item.phase === "unknown" ? "unknown" : "unavailable" });
   }
+  function restore(attachments: readonly TalkRecoveryAttachment[]) {
+    if (!active() || items.length) return;
+    items = attachments.map(item => item.phase === "ready"
+      ? { id: ++sequence, file: { name: item.upload.attachment.name, type: item.upload.attachment.mediaType, size: 0 },
+        missingFile: true, phase: "ready", upload: item.upload }
+      : { id: ++sequence, file: { name: item.name, type: item.mediaType, size: item.size ?? 0 },
+        missingFile: true, phase: "failed", error: "元のファイルをもう一度選んでください。" });
+    notify();
+  }
   function pump() {
     if (!active() || flight) return;
     const item = items.find(candidate => candidate.phase === "queued");
@@ -109,6 +119,7 @@ export function createTalkAttachmentDraft(options: {
     const current = { item, abort: new AbortController() }; flight = current; item.phase = "uploading"; notify();
     void (async () => {
       try {
+        if (!(item.file instanceof File)) throw new Error("元のファイルをもう一度選んでください。");
         const upload = await options.upload(item.file, current.abort.signal);
         if (!active() || flight !== current || !items.includes(item)) return;
         item.upload = upload; item.phase = "ready"; item.error = undefined;
@@ -143,11 +154,11 @@ export function createTalkAttachmentDraft(options: {
   function retry(id: number) {
     if (!active()) return;
     const item = items.find(candidate => candidate.id === id);
-    if (!item || item.phase === "uploading" || item.phase === "queued" || (item.phase === "ready" && !expired(item))) return;
+    if (!item || item.missingFile || item.phase === "uploading" || item.phase === "queued" || (item.phase === "ready" && !expired(item))) return;
     const error = selectionError(item.file); item.upload = undefined; item.error = error; item.phase = error ? "failed" : "queued";
     notify(); pump();
   }
   function commit(ids: readonly number[]) { if (active()) { items = items.filter(item => !ids.includes(item.id)); notify(); } }
   function dispose() { disposed = true; clearTimeout(expiryTimer); expiryTimer = undefined; flight?.abort.abort(); flight = undefined; items = []; error = ""; }
-  return { state, snapshot, recoverySnapshot, add, remove, retry, commit, dispose };
+  return { state, snapshot, recoverySnapshot, restore, add, remove, retry, commit, dispose };
 }

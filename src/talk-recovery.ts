@@ -74,6 +74,28 @@ interface TalkRecoveryDraftFields {
   readonly contact: { readonly type: "user" | "community"; readonly apId: string };
   readonly content: string;
   readonly attachments: readonly TalkRecoveryAttachment[];
+  readonly edit?: TalkRecoveryEdit;
+}
+
+/** Local editing data only. A restored action must obtain a fresh owned revision. */
+export interface TalkRecoveryEdit {
+  readonly id: string;
+  readonly content: string;
+  readonly baseContent: string;
+  readonly attempted?: { readonly content: string; readonly draft: string };
+}
+
+export function copyTalkRecoveryEdit(value: unknown): TalkRecoveryEdit {
+  const text = (input: unknown): input is string => typeof input === "string" && input.length <= 64 * 1024 && new TextEncoder().encode(input).byteLength <= 64 * 1024;
+  if (!record(value, ["id", "content", "baseContent", "attempted"]) || !isTalkNotificationId(value.id) || !text(value.content) || !text(value.baseContent)) throw new TalkRecoveryError("invalid-data");
+  let attempted: TalkRecoveryEdit["attempted"];
+  if (value.attempted !== undefined) {
+    const item = value.attempted;
+    if (!record(item, ["content", "draft"]) || !text(item.content) || !text(item.draft) || !item.content ||
+      item.content.length > 5000 || item.content !== item.content.trim() || item.draft.trim() !== item.content) throw new TalkRecoveryError("invalid-data");
+    attempted = { content: item.content, draft: item.draft };
+  }
+  return { id: value.id, content: value.content, baseContent: value.baseContent, ...(attempted ? { attempted } : {}) };
 }
 
 /** Original attempted payload, retained for manual reconciliation, never replay authority. */
@@ -152,7 +174,7 @@ function verifiedDrafts(value: unknown, time: number): TalkRecoveryDraft[] {
   if (!Array.isArray(value) || value.length > 100) throw new TalkRecoveryError("invalid-data");
   const result: TalkRecoveryDraft[] = [], contacts = new Set<string>();
   for (const item of value) {
-    if (!record(item, ["contact", "content", "sendState", "attachments", "intent"]) ||
+    if (!record(item, ["contact", "content", "sendState", "attachments", "intent", "edit"]) ||
       !record(item.contact, ["type", "apId"]) || (item.contact.type !== "user" && item.contact.type !== "community") ||
       !isTalkNotificationId(item.contact.apId) || typeof item.content !== "string" || item.content.length > 2000 ||
       (item.sendState !== "draft" && item.sendState !== "pending" && item.sendState !== "uncertain") ||
@@ -163,9 +185,9 @@ function verifiedDrafts(value: unknown, time: number): TalkRecoveryDraft[] {
     if (contacts.has(contactKey)) throw new TalkRecoveryError("invalid-data");
     contacts.add(contactKey);
     const base: TalkRecoveryDraftFields = { contact: { type: item.contact.type, apId: item.contact.apId }, content: item.content,
-      attachments: verifiedAttachments(item.attachments, time) };
+      attachments: verifiedAttachments(item.attachments, time), ...(item.edit === undefined ? {} : { edit: copyTalkRecoveryEdit(item.edit) }) };
     if (item.sendState === "draft") {
-      if (item.intent !== undefined || (!item.content.trim() && !item.attachments.length)) throw new TalkRecoveryError("invalid-data");
+      if (item.intent !== undefined || (!item.content.trim() && !item.attachments.length && !base.edit)) throw new TalkRecoveryError("invalid-data");
       result.push({ ...base, sendState: "draft" });
     } else {
       result.push({ ...base, sendState: item.sendState, intent: verifiedIntent(item.intent) });

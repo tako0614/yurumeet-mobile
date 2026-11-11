@@ -1,4 +1,5 @@
 import { MobileApiError, type MobileSession } from "@takosjp/mobile-kit";
+import { copyTalkRecoveryEdit, type TalkRecoveryEdit } from "./talk-recovery.ts";
 import { loadOwnedTalkMessage, editOwnedTalkMessage, deleteOwnedTalkMessage, loadOwnedGroupTalkMessage, editOwnedGroupTalkMessage, deleteOwnedGroupTalkMessage, type TalkMessage, type TalkContact } from "./api.ts";
 
 export interface TalkMessageActionState {
@@ -13,6 +14,7 @@ export interface TalkMessageActionState {
   readonly error: string;
   readonly canSave: boolean;
   readonly canCancel: boolean;
+  readonly originalAttempt?: string;
 }
 
 interface Action {
@@ -28,7 +30,7 @@ interface Action {
   needsReadback: boolean;
   unavailable: boolean;
   error: string;
-  submitted?: { content: string; draftRevision: number };
+  submitted?: { content: string; draft: string; draftRevision: number };
 }
 
 /** A conversation owns its draft and write even when its view is elsewhere. */
@@ -45,6 +47,8 @@ export function createTalkMessageActions(options: {
   onChange: () => void;
   onIdle: () => void;
   afterCommit: () => Promise<void>;
+  ready?: () => boolean;
+  checkpoint?: () => Promise<void>;
 }) {
   let action: Action | undefined;
   let readAbort: AbortController | undefined, writeAbort: AbortController | undefined;
@@ -56,8 +60,8 @@ export function createTalkMessageActions(options: {
     const item = action;
     return { id: item.id, kind: item.kind, content: item.content, serverContent: item.serverContent,
       loading: item.loading, pending: item.pending, needsReadback: item.needsReadback,
-      unavailable: item.unavailable, error: item.error,
-      canSave: owns(item) && options.isCurrent() && !item.loading && !item.pending && !item.needsReadback && !item.unavailable && !!item.revision &&
+      unavailable: item.unavailable, error: item.error, originalAttempt: item.submitted?.content,
+      canSave: owns(item) && (item.kind !== "edit" || options.ready?.() !== false) && options.isCurrent() && !item.loading && !item.pending && !item.needsReadback && !item.unavailable && !!item.revision &&
         (item.kind === "delete" || (!!item.content.trim() && item.content.trim().length <= 5000 && item.content.trim() !== item.serverContent)),
       canCancel: !item.pending && !(item.submitted && item.needsReadback) };
   }
@@ -110,13 +114,16 @@ export function createTalkMessageActions(options: {
     } catch {
       if (current()) { item.needsReadback = true; item.error = "メッセージを確認できませんでした。接続とサーバーの対応を確認してから再確認してください。"; }
     } finally {
-      if (readAbort === abort) { readAbort = undefined; item.loading = false; idle(); }
+      if (readAbort === abort) {
+        readAbort = undefined; item.loading = false;
+        await checkpointAfterObservation(item); idle();
+      }
     }
   }
 
   async function begin(kind: Action["kind"], id: string) {
     const actor = options.actor(), message = options.message(id);
-    if (!active() || !options.isCurrent() || !actor || message?.sender.ap_id !== actor || action || writeAbort) return;
+    if (!active() || (kind === "edit" && options.ready?.() === false) || !options.isCurrent() || !actor || message?.sender.ap_id !== actor || action || writeAbort) return;
     action = { id, actor, kind, content: message.content ?? "", serverContent: message.content ?? "", draftRevision: 0,
       loading: false, pending: false, needsReadback: true, unavailable: false, error: "" };
     await read(true);
@@ -137,9 +144,13 @@ export function createTalkMessageActions(options: {
     if (!item || item.kind !== kind || !state()?.canSave || !item.revision || writeAbort) return;
     options.pauseReads();
     const abort = new AbortController(), session = options.session(), revision = item.revision;
-    item.submitted = { content: item.content.trim(), draftRevision: item.draftRevision };
+    item.submitted = { content: item.content.trim(), draft: item.content, draftRevision: item.draftRevision };
     item.pending = true; item.error = ""; writeAbort = abort; emit();
+    let dispatched = false;
     try {
+      if (kind === "edit") await options.checkpoint?.();
+      if (!owns(item) || writeAbort !== abort || abort.signal.aborted || (kind === "edit" && options.ready?.() === false)) return;
+      dispatched = true;
       if (kind === "edit") {
         const ack = options.contact.type === "community"
           ? await editOwnedGroupTalkMessage(session, options.contact.ap_id, item.id, item.submitted.content, revision, abort.signal)
@@ -158,22 +169,52 @@ export function createTalkMessageActions(options: {
       }
       if (owns(item) || active()) void options.afterCommit();
     } catch (cause) {
-      if (owns(item)) { item.needsReadback = true;
-        const rejected = cause instanceof MobileApiError && cause.status >= 400 && cause.status < 500 && cause.status !== 408;
+      if (owns(item)) { item.needsReadback = dispatched;
+        const rejected = !dispatched || cause instanceof MobileApiError && cause.status >= 400 && cause.status < 500 && cause.status !== 408;
         // A definitive rejection did not acknowledge a write. Keep the text,
         // require a fresh read before saving, but do not trap the editor closed.
         if (rejected) item.submitted = undefined;
-        item.error = cause instanceof MobileApiError && cause.status === 409
+        item.error = !dispatched ? "送信前に編集の復旧情報を保存できませんでした。下書きの保存を再試行してください。"
+          : cause instanceof MobileApiError && cause.status === 409
           ? "別の画面でメッセージが変わりました。現在の1件を確認してから操作してください。"
           : rejected ? "メッセージを変更できませんでした。権限と接続を確認してください。編集内容は残しています。"
           : "変更の結果を確認できませんでした。再送せず、現在の1件を確認してください。"; }
     } finally {
-      if (writeAbort === abort) { writeAbort = undefined; item.pending = false; idle(); }
+      if (writeAbort === abort) {
+        writeAbort = undefined; item.pending = false;
+        await checkpointAfterObservation(item); idle();
+      }
     }
+  }
+
+  function snapshot(): TalkRecoveryEdit | undefined {
+    if (!action || action.kind !== "edit") return;
+    return copyTalkRecoveryEdit({ id: action.id, content: action.content, baseContent: action.serverContent,
+      ...(action.submitted ? { attempted: { content: action.submitted.content, draft: action.submitted.draft } } : {}) });
+  }
+
+  // Stored text and routing are not read provenance. Only the real owned GET
+  // below can provide the revision used by the existing DM/group CAS writer.
+  function restore(input: TalkRecoveryEdit): Promise<void> | undefined {
+    const actor = options.actor();
+    if (!active() || options.ready?.() === false || !options.isCurrent() || !actor || action || writeAbort) return;
+    const saved = copyTalkRecoveryEdit(input);
+    action = { id: saved.id, actor, kind: "edit", content: saved.content, serverContent: saved.baseContent,
+      draftRevision: 0, loading: false, pending: false, needsReadback: true, unavailable: false, error: "",
+      ...(saved.attempted ? { submitted: { content: saved.attempted.content, draft: saved.attempted.draft,
+        draftRevision: saved.content === saved.attempted.draft ? 0 : -1 } } : {}) };
+    return read();
+  }
+
+  async function checkpointAfterObservation(item: Action) {
+    if (!active() || item.kind !== "edit" || !options.checkpoint) return;
+    emit();
+    try { await options.checkpoint(); }
+    catch { /* The owning recovery state exposes the storage error, not an unknown ACK. */ }
   }
 
   function dispose() {
     disposed = true; readAbort?.abort(); writeAbort?.abort(); readAbort = undefined; writeAbort = undefined; action = undefined;
   }
-  return { state, begin, setContent, cancel, submit, reconcile: () => read(), abortRead, dispose };
+  return { state, begin, setContent, cancel, submit, reconcile: () => read(), abortRead, dispose, snapshot, restore };
 }

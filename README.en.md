@@ -1,5 +1,8 @@
 # Yurumeet Mobile
 
+If startup cannot read saved account data or the launch bridge, the screen reports a generic failure and offers **Retry** without displaying raw exception details.
+Each retry is explicit and deduplicated; it cannot register a replacement launch listener until prior cleanup is confirmed. A read failure is not accepted as an empty saved-account list.
+
 Android Back follows the active confirmation dialog, message editor, search,
 conversation or request list. An uncertain send or change is never cancelled
 or resent by Back: its conversation draft and pending state remain available

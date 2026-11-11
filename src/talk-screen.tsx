@@ -299,11 +299,35 @@ export function TalkScreen(props: {
       <Show when={state().recovery}>
         {recovery => <>
           <Show when={recovery().loading || recovery().saving}><p role="status">{recovery().loading ? "保存した下書きを確認中…" : "下書きを保存中…"}</p></Show>
+          <Show when={recovery().reviewingExpired}><p role="status">期限切れの下書きを確認中…</p></Show>
           <Show when={recovery().error}><div role="alert" class="talk-error">
             <p>{recovery().error}</p>
-            <button type="button" class="text-button" disabled={recovery().loading || recovery().saving}
+            <button type="button" class="text-button" disabled={recovery().loading || recovery().saving || recovery().reviewingExpired}
               onClick={() => void controller.flushRecovery()}>下書きの確認・保存を再試行</button>
+            <Show when={recovery().canReviewExpired}>
+              <button type="button" class="text-button" onClick={() => void controller.reviewExpiredRecovery()}>期限切れの下書きを確認</button>
+            </Show>
           </div></Show>
+          <Show when={recovery().expiredDrafts}>
+            {drafts => <MobilePreviewSection title="期限切れの下書き">
+              <p>復元しても送信しません。相手と内容を確認してください。未確認の送信は別途確認が必要です。</p>
+              <For each={drafts()}>{draft => <div>
+                <strong>{draft.contact.apId}</strong>
+                <p style={{ "white-space": "pre-wrap" }}>{draft.content || "本文なし"}</p>
+                <For each={draft.attachments}>{attachment => <p>{attachment.phase === "ready"
+                  ? `${attachment.upload.attachment.name}（有効期限内の添付）` : `${attachment.name}（元のファイルを再選択）`}</p>}</For>
+                <Show when={draft.sendState !== "draft" && draft.intent}>
+                  {intent => <div><p>送信結果が未確認の元の内容</p><p style={{ "white-space": "pre-wrap" }}>{intent().content || "本文なし"}</p>
+                    <For each={intent().attachments}>{upload => <p>{upload.attachment.name}</p>}</For>
+                  </div>}
+                </Show>
+              </div>}</For>
+              <button type="button" class="text-button" disabled={recovery().saving}
+                onClick={() => void controller.restoreExpiredRecovery()}>確認した下書きを復元</button>
+              <button type="button" class="text-button" disabled={recovery().saving}
+                onClick={() => controller.cancelExpiredRecoveryReview()}>確認を閉じる</button>
+            </MobilePreviewSection>}
+          </Show>
           <Show when={!selected() && recovery().drafts.length}>
             <MobilePreviewSection title="保存した下書き・未確認の送信">
               <For each={recovery().drafts}>{draft => <div class="message-action-buttons">

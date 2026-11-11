@@ -69,6 +69,9 @@ These local routes do not assert that the server retains history or accepted the
 Drafts are saved through the existing secure storage after a 150 ms input pause and restored for the same saved account after restart or reload.
 Sending waits when secure storage or the saved snapshot cannot be verified; retry the recovery check or save explicitly.
 The last input may be lost if the app terminates before its write completes. File bytes are not persisted.
+After seven days, a snapshot requires explicit read-only review before restoring it. Closing the review changes or deletes nothing.
+Confirmation restores only the same stored bytes that were reviewed; newer saves, corrupt data and another scope cannot be overwritten through this path.
+Expired attachments require selecting the original file again. Restoration neither sends a message nor resolves an unknown result.
 An interrupted or unknown send retains its original body/media separately from newer input and is never replayed automatically.
 Review the history and original payload, then explicitly allow the next send. This decision does not confirm delivery.
 Saved contacts are resolved through the authenticated API; expired or unfinished media requires selecting the original file again.

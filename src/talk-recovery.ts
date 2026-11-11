@@ -117,6 +117,10 @@ export interface TalkExpiredRecoveryReview {
   restore: () => Promise<void>;
 }
 
+export interface TalkInvalidRecoveryReview {
+  discard: () => Promise<void>;
+}
+
 export type TalkRecoveryAttachment =
   | { readonly phase: "ready"; readonly upload: TalkUpload }
   | { readonly phase: "needs-reselection"; readonly name: string; readonly mediaType: string;
@@ -268,6 +272,14 @@ export function createTalkRecoveryStore(options: {
   function live() {
     if (owned.retired || shared.scopes.get(scope) !== owned) throw new TalkRecoveryError("retired");
   }
+  function verifyInvalidDrafts(raw: string, key: string) {
+    const time = currentTime(), data = snapshotHeader(raw, key, time);
+    // Only an identifiable current-version snapshot may be offered for discard.
+    // An unreadable header, foreign scope or future version is never deletion authority.
+    try { verifiedDrafts(data.drafts, time); }
+    catch (cause) { if (cause instanceof TalkRecoveryError && cause.code === "invalid-data") return; throw cause; }
+    throw new TalkRecoveryError("changed");
+  }
   return {
     async save(drafts: readonly TalkRecoveryDraft[]) {
       live();
@@ -327,6 +339,27 @@ export function createTalkRecoveryStore(options: {
             live();
           }),
         };
+      });
+    },
+    async reviewInvalid(): Promise<TalkInvalidRecoveryReview> {
+      live();
+      return queued(async () => {
+        live();
+        const key = await storageKey();
+        live();
+        const raw = await storageOperation(() => store.get(key));
+        live();
+        if (raw === undefined) throw new TalkRecoveryError("changed");
+        verifyInvalidDrafts(raw, key);
+        return { discard: () => queued(async () => {
+          live();
+          const current = await storageOperation(() => store.get(key));
+          live();
+          if (current !== raw) throw new TalkRecoveryError("changed");
+          verifyInvalidDrafts(raw, key);
+          await storageOperation(() => store.delete(key));
+          live();
+        }) };
       });
     },
     retire(): Promise<void> {

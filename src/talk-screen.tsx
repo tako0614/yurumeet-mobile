@@ -303,12 +303,25 @@ export function TalkScreen(props: {
           <Show when={recovery().reviewingExpired}><p role="status">期限切れの下書きを確認中…</p></Show>
           <Show when={recovery().error}><div role="alert" class="talk-error">
             <p>{recovery().error}</p>
-            <button type="button" class="text-button" disabled={recovery().loading || recovery().saving || recovery().reviewingExpired}
+            <button type="button" class="text-button" disabled={recovery().loading || recovery().saving || recovery().reviewingExpired || recovery().reviewingInvalid}
               onClick={() => void controller.flushRecovery()}>下書きの確認・保存を再試行</button>
             <Show when={recovery().canReviewExpired}>
               <button type="button" class="text-button" onClick={() => void controller.reviewExpiredRecovery()}>期限切れの下書きを確認</button>
             </Show>
+            <Show when={recovery().canReviewInvalid}>
+              <button type="button" class="text-button" onClick={() => void controller.reviewInvalidRecovery()}>破損した下書きの破棄を確認</button>
+            </Show>
           </div></Show>
+          <Show when={recovery().invalidDraftReview}>
+            <MobilePreviewSection title="破損した下書きを破棄しますか">
+              <p>このアカウント・接続先の端末内の下書きを破棄します。本文・添付・未確認の送信や編集の記録は復元できません。</p>
+              <p>破棄しても送信・編集結果は確定しません。履歴を確認してください。他のアカウントやサーバーのデータは削除しません。</p>
+              <button type="button" class="text-button" disabled={recovery().saving}
+                onClick={() => void controller.discardInvalidRecovery()}>この端末の下書きを破棄</button>
+              <button type="button" class="text-button" disabled={recovery().saving}
+                onClick={() => controller.cancelInvalidRecoveryReview()}>破棄せず戻る</button>
+            </MobilePreviewSection>
+          </Show>
           <Show when={recovery().expiredDrafts}>
             {drafts => <MobilePreviewSection title="期限切れの下書き">
               <p>復元しても送信しません。相手と内容を確認してください。未確認の送信は別途確認が必要です。</p>

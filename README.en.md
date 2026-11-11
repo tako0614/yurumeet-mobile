@@ -73,7 +73,10 @@ An interrupted or unknown send retains its original body/media separately from n
 Review the history and original payload, then explicitly allow the next send. This decision does not confirm delivery.
 Saved contacts are resolved through the authenticated API; expired or unfinished media requires selecting the original file again.
 Storage is partitioned by host, saved account row, verified actor and API root. Switching accounts preserves drafts;
-sign-out or authority eviction deletes only the removed row. A failed purge remains visible after sign-out with an explicit retry.
+sign-out or authority eviction deletes only the removed row. The row and its actual retirement intent are recorded in secure storage before deletion,
+so a failed purge remains reachable after app restart through the explicit draft-deletion retry. Absence from an account list alone never authorizes deletion;
+other saved accounts and a fresh row for the same person are preserved. If the account list or cleanup record cannot be read, deletion waits for explicit recheck.
+Discovery is not guaranteed when recording the retirement intent itself failed, or for orphaned data from before this index existed.
 Recovery creates no server ACK or idempotency authority. OS crash, Stronghold and device update/rollback qualification are separate.
 
 Own DM messages expose native edit and confirmed delete actions. A fresh author-only single-message read supplies

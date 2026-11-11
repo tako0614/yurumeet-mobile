@@ -3,6 +3,7 @@ import { mobileAccountIdentity, normalizeHostUrl, type MobileAccountList, type M
 import { createTalkRecoveryStore, TalkRecoveryError, type TalkRecoveryScope } from "./talk-recovery.ts";
 
 type Account = Pick<MobileAccountSummary, "id" | "hostUrl" | "product">;
+type IndexedAccount = Account & { cleanupPending: boolean };
 type Entry = readonly [string, string];
 interface AccountState {
   readonly store: MobileSecureStore;
@@ -10,6 +11,8 @@ interface AccountState {
   retire: () => Promise<void>;
 }
 const accounts = new WeakMap<MobileSecureStore, Map<string, AccountState>>();
+const indexQueues = new WeakMap<MobileSecureStore, Promise<void>>();
+const indexKey = "yurumeet:talk-recovery-accounts:v1";
 const maxEnvelopeBytes = 4 * 1024 * 1024;
 const scopeKey = /^yurumeet:talk-recovery:v1:[a-f0-9]{64}$/u;
 
@@ -25,7 +28,8 @@ function identity(account: Account) {
       typeof account.hostUrl !== "string" || account.hostUrl.length > 2048 || /[\u0000-\u0020\u007f]/u.test(account.hostUrl)) throw new Error();
     const host = normalizeHostUrl(account.hostUrl), parsed = new URL(account.hostUrl);
     if (parsed.pathname !== "/" || parsed.search || parsed.hash) throw new Error();
-    return { host, value: JSON.stringify([account.product, host, account.id]) };
+    return { host, value: JSON.stringify([account.product, host, account.id]),
+      row: { id: account.id, hostUrl: host, product: "yurume" as const } };
   } catch { throw new TalkRecoveryError("invalid-scope"); }
 }
 
@@ -56,6 +60,52 @@ export function createTalkRecoveryAccounts(options: { store?: MobileSecureStore 
   const store: MobileSecureStore = selectedStore;
   const shared = accounts.get(store) ?? new Map<string, AccountState>();
   accounts.set(store, shared);
+  function indexed<T>(work: () => Promise<T>): Promise<T> {
+    const next = (indexQueues.get(store) ?? Promise.resolve()).then(work);
+    indexQueues.set(store, next.then(() => {}, () => {}));
+    return next;
+  }
+  async function readIndex(): Promise<IndexedAccount[]> {
+    const raw = await store.get(indexKey);
+    if (raw === undefined) return [];
+    try {
+      bounded(raw, 512 * 1024);
+      const data = JSON.parse(raw);
+      if (!data || typeof data !== "object" || Array.isArray(data) || data.version !== 1 ||
+        Object.keys(data).some(key => !["version", "rows"].includes(key)) || !Array.isArray(data.rows) || data.rows.length > 128) throw new Error();
+      const seen = new Set<string>();
+      return data.rows.map((row: unknown) => {
+        if (!row || typeof row !== "object" || Array.isArray(row) || Object.keys(row).some(key => !["id", "hostUrl", "product", "cleanupPending"].includes(key))) throw new Error();
+        const selected = identity(row as Account);
+        if (typeof (row as IndexedAccount).cleanupPending !== "boolean") throw new Error();
+        if (seen.has(selected.value)) throw new Error();
+        seen.add(selected.value);
+        return { ...selected.row, cleanupPending: (row as IndexedAccount).cleanupPending };
+      });
+    } catch { throw new TalkRecoveryError("invalid-data"); }
+  }
+  function registerRow(value: string, cleanupPending = false) {
+    return indexed(async () => {
+      const rows = await readIndex();
+      const existing = rows.find(row => identity(row).value === value);
+      if (existing && (!cleanupPending || existing.cleanupPending)) return;
+      if (!existing && rows.length >= 128) throw new TalkRecoveryError("invalid-data");
+      const [product, hostUrl, id] = JSON.parse(value);
+      const row = { ...identity({ product, hostUrl, id }).row, cleanupPending };
+      const next = existing ? rows.map(item => identity(item).value === value ? row : item) : [...rows, row];
+      const raw = JSON.stringify({ version: 1, rows: next });
+      bounded(raw, 512 * 1024);
+      await store.set(indexKey, raw);
+    });
+  }
+  function unregisterRow(value: string) {
+    return indexed(async () => {
+      const previous = await readIndex(), rows = previous.filter(row => identity(row).value !== value);
+      if (rows.length === previous.length) return;
+      if (rows.length) await store.set(indexKey, JSON.stringify({ version: 1, rows }));
+      else await store.delete(indexKey);
+    });
+  }
   function accountState(value: string): AccountState {
     const previous = shared.get(value);
     if (previous) return previous;
@@ -96,6 +146,9 @@ export function createTalkRecoveryAccounts(options: { store?: MobileSecureStore 
         entries.push([name, raw]);
         const encoded = JSON.stringify({ version: 1, owner, entries });
         bounded(encoded, maxEnvelopeBytes);
+        // The discoverable row must be durable before any private payload.
+        await registerRow(value);
+        active();
         await store.set(owner, encoded);
         active();
       }),
@@ -114,7 +167,13 @@ export function createTalkRecoveryAccounts(options: { store?: MobileSecureStore 
     function retire() {
       retired = true;
       retirement ??= queued(async () => {
-        try { await store.delete(await storageKey()); }
+        try {
+          // Only a genuine row-retirement notification establishes this intent.
+          // Persist it before deleting; absence from a normalized list is insufficient.
+          await registerRow(value, true);
+          await store.delete(await storageKey());
+          await unregisterRow(value);
+        }
         catch (cause) { throw new TalkRecoveryError("storage", { cause }); }
       }).catch(cause => { retirement = undefined; throw cause; });
       return retirement;
@@ -140,5 +199,12 @@ export function createTalkRecoveryAccounts(options: { store?: MobileSecureStore 
         ...(input.session.apiBaseUrl === undefined ? {} : { apiBaseUrl: input.session.apiBaseUrl }) });
     },
     retire: (account: Account) => accountState(identity(account).value).retire(),
+    async pendingCleanup(saved: MobileAccountList): Promise<Account[]> {
+      if (!saved || !Array.isArray(saved.accounts) || saved.accounts.length > 32) throw new TalkRecoveryError("invalid-scope");
+      const current = new Set(saved.accounts.map(row => identity(row).value));
+      if (current.size !== saved.accounts.length) throw new TalkRecoveryError("invalid-scope");
+      return indexed(async () => (await readIndex())
+        .filter(row => row.cleanupPending && !current.has(identity(row).value)).map(row => identity(row).row));
+    },
   };
 }

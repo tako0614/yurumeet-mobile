@@ -1,5 +1,5 @@
-import { batch, createEffect, createRoot, createSignal, getOwner, onCleanup, Show, type JSX } from "solid-js";
-import { loadMobileAccounts, mobileAccountIdentity, type NativeBridge, type MobileSession, type MobileRetiredAccountScope } from "@takosjp/mobile-kit";
+import { batch, createEffect, createRoot, createSignal, getOwner, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { loadMobileAccounts, mobileAccountIdentity, normalizeHostUrl, type NativeBridge, type MobileSession, type MobileRetiredAccountScope } from "@takosjp/mobile-kit";
 import {
   MobileClientApp,
   type MobileClientAppProps,
@@ -53,21 +53,40 @@ export function createYurumeetMobileApp(
   const sharedBridge = () => bridge ??= createNativeBridge();
   let recoveryAccounts: ReturnType<typeof createTalkRecoveryAccounts> | undefined;
   const recovery = () => recoveryAccounts ??= createTalkRecoveryAccounts({ store: sharedBridge().secureStore });
-  const [cleanupFailures, setCleanupFailures] = createSignal<readonly MobileRetiredAccountScope[]>([]);
+  type CleanupAccount = Pick<MobileRetiredAccountScope, "id" | "hostUrl" | "product">;
+  const [cleanupFailures, setCleanupFailures] = createSignal<readonly CleanupAccount[]>([]);
+  const [cleanupCheckError, setCleanupCheckError] = createSignal(false);
   const [cleaning, setCleaning] = createSignal(false);
-  async function cleanupScope(scope: MobileRetiredAccountScope) {
+  const cleanupKey = (row: CleanupAccount) => JSON.stringify([row.product, normalizeHostUrl(row.hostUrl), row.id]);
+  async function cleanupScope(scope: CleanupAccount) {
     try {
       await recovery().retire(scope);
-      setCleanupFailures(rows => rows.filter(row => row.id !== scope.id || row.hostUrl !== scope.hostUrl));
+      setCleanupFailures(rows => rows.filter(row => cleanupKey(row) !== cleanupKey(scope)));
     } catch {
-      setCleanupFailures(rows => rows.some(row => row.id === scope.id && row.hostUrl === scope.hostUrl) ? rows : [...rows, scope]);
+      setCleanupFailures(rows => rows.some(row => cleanupKey(row) === cleanupKey(scope)) ? rows : [...rows, scope]);
       throw new Error("サインアウトしましたが、このアカウントの下書き削除を確認できませんでした。");
     }
   }
+  async function restoreCleanup() {
+    if (!sharedBridge().secureStore) return true;
+    try {
+      const saved = await loadMobileAccounts({ adapter: productAdapter, nativeBridge: sharedBridge() });
+      const pending = await recovery().pendingCleanup(saved);
+      const present = new Set(saved.accounts.map(cleanupKey));
+      setCleanupFailures(previous => [...new Map([...previous, ...pending]
+        .filter(row => !present.has(cleanupKey(row))).map(row => [cleanupKey(row), row])).values()]);
+      setCleanupCheckError(false);
+      return true;
+    } catch { setCleanupCheckError(true); return false; }
+  }
+  onMount(() => { void restoreCleanup(); });
   async function retryCleanup() {
     if (cleaning()) return;
     setCleaning(true);
-    try { for (const scope of cleanupFailures()) { try { await cleanupScope(scope); } catch { /* The exact row remains retryable. */ } } }
+    try {
+      if (!await restoreCleanup()) return;
+      for (const scope of cleanupFailures()) { try { await cleanupScope(scope); } catch { /* The exact row remains retryable. */ } }
+    }
     finally { setCleaning(false); }
   }
   const [backFailure, setBackFailure] = createSignal<AndroidBackFailure>();
@@ -204,7 +223,11 @@ export function createYurumeetMobileApp(
 
   return {
     // Remains reachable after the account-owned talk view is retired.
-    BackRecovery: () => <><Show when={cleanupFailures().length}>
+    BackRecovery: () => <><Show when={cleanupCheckError()}>
+      <div role="alert"><p>未完の下書き削除を確認できませんでした。保存データは削除していません。</p>
+        <button type="button" class="text-button" disabled={cleaning()} onClick={() => void retryCleanup()}>下書き削除の確認を再試行</button>
+      </div>
+    </Show><Show when={cleanupFailures().length}>
       <div role="alert"><p>サインアウト済みアカウントの下書き削除を確認できませんでした。</p>
         <button type="button" class="text-button" disabled={cleaning()} onClick={() => void retryCleanup()}>下書きの削除を再試行</button>
       </div>

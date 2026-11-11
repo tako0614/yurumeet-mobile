@@ -16,6 +16,7 @@ const messages = {
   "invalid-scope": "Invalid recovery scope.",
   "invalid-data": "Recovery data could not be verified.",
   expired: "Recovery data has expired; manual review is required.",
+  changed: "Recovery data changed; review the current snapshot again.",
   storage: "Recovery storage did not confirm the operation.",
   retired: "This recovery scope has been retired.",
 };
@@ -87,6 +88,12 @@ export type TalkRecoveryDraft = TalkRecoveryDraftFields & (
   | { readonly sendState: "draft"; readonly intent?: never }
   | { readonly sendState: "pending" | "uncertain"; readonly intent: TalkRecoveryIntent }
 );
+
+/** Read-only preview; restoring it is conditional on the original bytes still being current. */
+export interface TalkExpiredRecoveryReview {
+  readonly drafts: readonly TalkRecoveryDraft[];
+  restore: () => Promise<void>;
+}
 
 export type TalkRecoveryAttachment =
   | { readonly phase: "ready"; readonly upload: TalkUpload }
@@ -179,6 +186,17 @@ interface RecoveryScopeState {
 }
 const storeStates = new WeakMap<MobileSecureStore, RecoveryStoreState>();
 
+function snapshotHeader(raw: string, key: string, time: number) {
+  try {
+    bounded(raw);
+    const data: unknown = JSON.parse(raw);
+    if (!record(data, ["version", "scope", "savedAt", "expiresAt", "drafts"]) || data.version !== 1 || data.scope !== key ||
+      !Number.isSafeInteger(data.savedAt) || (data.savedAt as number) < 0 || !Number.isSafeInteger(data.expiresAt) ||
+      data.expiresAt !== (data.savedAt as number) + lifetimeMs || (data.savedAt as number) > time) throw new Error();
+    return { drafts: data.drafts, expiresAt: data.expiresAt as number };
+  } catch { throw new TalkRecoveryError("invalid-data"); }
+}
+
 /**
  * Product secure-store primitive, not yet a controller/OS recovery implementation.
  * Callers must share the bridge's store instance, fence auth epochs, and revalidate
@@ -253,19 +271,40 @@ export function createTalkRecoveryStore(options: {
         const raw = await storageOperation(() => store.get(key));
         live();
         if (raw === undefined) return null;
-        try {
-          bounded(raw);
-          const data: unknown = JSON.parse(raw);
-          const time = currentTime();
-          if (!record(data, ["version", "scope", "savedAt", "expiresAt", "drafts"]) || data.version !== 1 || data.scope !== key ||
-            !Number.isSafeInteger(data.savedAt) || (data.savedAt as number) < 0 || !Number.isSafeInteger(data.expiresAt) ||
-            data.expiresAt !== (data.savedAt as number) + lifetimeMs || (data.savedAt as number) > time) throw new Error();
-          if (time >= (data.expiresAt as number)) throw new TalkRecoveryError("expired");
-          return verifiedDrafts(data.drafts, time);
-        } catch (cause) {
-          if (cause instanceof TalkRecoveryError) throw cause;
-          throw new TalkRecoveryError("invalid-data");
-        }
+        const time = currentTime(), data = snapshotHeader(raw, key, time);
+        if (time >= data.expiresAt) throw new TalkRecoveryError("expired");
+        return verifiedDrafts(data.drafts, time);
+      });
+    },
+    async reviewExpired(): Promise<TalkExpiredRecoveryReview> {
+      live();
+      return queued(async () => {
+        live();
+        const key = await storageKey();
+        live();
+        const raw = await storageOperation(() => store.get(key));
+        live();
+        if (raw === undefined) throw new TalkRecoveryError("changed");
+        const time = currentTime(), data = snapshotHeader(raw, key, time);
+        if (time < data.expiresAt) throw new TalkRecoveryError("changed");
+        const drafts = verifiedDrafts(data.drafts, time);
+        return {
+          drafts,
+          restore: () => queued(async () => {
+            live();
+            const current = await storageOperation(() => store.get(key));
+            live();
+            if (current !== raw) throw new TalkRecoveryError("changed");
+            const savedAt = currentTime(), original = snapshotHeader(raw, key, savedAt);
+            if (savedAt < original.expiresAt) throw new TalkRecoveryError("changed");
+            // Re-decode the original bytes; a caller cannot edit preview data into the write.
+            const encoded = JSON.stringify({ version: 1, scope: key, savedAt, expiresAt: savedAt + lifetimeMs,
+              drafts: verifiedDrafts(original.drafts, savedAt) });
+            bounded(encoded);
+            await storageOperation(() => store.set(key, encoded));
+            live();
+          }),
+        };
       });
     },
     retire(): Promise<void> {

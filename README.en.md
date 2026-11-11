@@ -72,6 +72,10 @@ The last input may be lost if the app terminates before its write completes. Fil
 After seven days, a snapshot requires explicit read-only review before restoring it. Closing the review changes or deletes nothing.
 Confirmation restores only the same stored bytes that were reviewed; newer saves, corrupt data and another scope cannot be overwritten through this path.
 Expired attachments require selecting the original file again. Restoration neither sends a message nor resolves an unknown result.
+When a current-format snapshot has an identifiable scope but corrupt draft contents, explicitly review and confirm discarding that device-local snapshot to recover without signing out.
+Opening or cancelling confirmation changes nothing; discard rechecks the exact stored bytes and refuses changed data, retired scopes, or failed reads/deletes.
+This loses the selected scope's drafts, attachment references and unknown-attempt records, without resolving delivery/edit outcomes or deleting other accounts, APIs or server data.
+Unreadable/foreign headers and unsupported versions cannot authorize discard. Serialization is within this process, not atomic CAS across processes.
 An interrupted or unknown send retains its original body/media separately from newer input and is never replayed automatically.
 Review the history and original payload, then explicitly allow the next send. This decision does not confirm delivery.
 Saved contacts are resolved through the authenticated API; expired or unfinished media requires selecting the original file again.

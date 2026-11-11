@@ -22,6 +22,7 @@ import {
   loadTalkNotificationContact,
   loadTalkRequests,
   loadTalkRequestContact,
+  loadTalkRecoveryContact,
   rejectTalkRequest,
   type TalkContact,
   type TalkMessage,
@@ -58,6 +59,12 @@ export interface TalkState {
   readonly uncertain: boolean;
   readonly canSend: boolean;
   readonly error: string;
+  readonly recovery?: {
+    readonly ready: boolean; readonly loading: boolean; readonly saving: boolean; readonly error: string;
+    readonly drafts: readonly TalkRecoveryDraft[];
+    readonly intent?: TalkRecoveryIntent;
+    readonly canConfirmReview: boolean;
+  };
 }
 
 interface Conversation {
@@ -71,6 +78,8 @@ interface Conversation {
   sending: boolean;
   uncertain: boolean;
   sendIntent?: TalkRecoveryIntent;
+  restoredIntent?: boolean;
+  recoveryRead?: boolean;
   sendAbort?: AbortController;
   readError: string;
   sendError: string;
@@ -96,7 +105,7 @@ export function createTalkController(options: {
   isActive?: () => boolean;
   observedMessageIds: () => readonly string[];
   /** Product-owned durable storage; it supplies neither authorization nor a send receipt. */
-  recovery?: Pick<ReturnType<typeof createTalkRecoveryStore>, "save">;
+  recovery?: Pick<ReturnType<typeof createTalkRecoveryStore>, "save"> & Partial<Pick<ReturnType<typeof createTalkRecoveryStore>, "load">>;
   receive?: {
     isForeground: () => boolean;
     canMarkRead?: () => boolean;
@@ -113,6 +122,11 @@ export function createTalkController(options: {
   // A replacement epoch must construct its own controller/verified port.
   let recoveryRetired = false;
   let recoveryRevision = 0;
+  let savedRecoveryRevision = 0;
+  let recoveryLoaded = !options.recovery?.load, recoveryError = "", recoverySaving = 0;
+  let recoveryContactError = "";
+  let recoveryLoad: Promise<void> | undefined, recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+  const recovered = new Map<string, TalkRecoveryDraft>();
   let selected: Conversation | undefined;
   let loading = false;
   let loadingOlder = false;
@@ -139,7 +153,7 @@ export function createTalkController(options: {
         .map(entry => ({ ...entry.contact, last_message: entry.contact.last_message ? { ...entry.contact.last_message } : null })),
       attachments: selected?.attachments?.state().items ?? [],
       attachmentError: selected?.attachments?.state().error ?? "",
-      canAddAttachments: active(authority) && !!actorApId && !!selected && !loading && !selected.messageActions?.state() && selected.attachments?.state().canAdd === true,
+      canAddAttachments: active(authority) && recoveryLoaded && !!actorApId && !!selected && !loading && !selected.messageActions?.state() && selected.attachments?.state().canAdd === true,
       messageAction: selected?.messageActions?.state(),
       canManageMessages: active(authority) && !!actorApId && !!selected && !loading && !loadingOlder &&
         !selected.sending && !selected.uncertain && !selected.messageActions?.state(),
@@ -162,6 +176,9 @@ export function createTalkController(options: {
       uncertain: selected?.uncertain ?? false,
       canSend: canSend(selected),
       error: selected?.sendError || selected?.readError || "",
+      recovery: options.recovery ? { ready: recoveryLoaded, loading: !recoveryLoaded && !!recoveryLoad, saving: recoverySaving > 0,
+        error: recoveryError || recoveryContactError, drafts: [...recovered.values()], intent: selected?.restoredIntent ? selected.sendIntent : undefined,
+        canConfirmReview: !!selected?.restoredIntent && selected.recoveryRead === true && !loading && !selected.sending && recoverySaving === 0 } : undefined,
     };
   }
 
@@ -171,12 +188,12 @@ export function createTalkController(options: {
 
   function canSend(entry: Conversation | undefined): boolean {
     const draft = entry?.attachments?.snapshot();
-    return active(authority) && !recoveryRetired && !!entry && !!draft && !loading && !entry.sending && !entry.uncertain && !entry.messageActions?.state() &&
+    return active(authority) && !recoveryRetired && recoveryLoaded && !recoveryError && !!entry && !!draft && !loading && !entry.sending && !entry.uncertain && !entry.messageActions?.state() &&
       (canSubmitMobileText({ value: entry.content, maxLength: 2000 }) || (!entry.content.trim() && draft.attachments.length > 0));
   }
 
   function recoveryDrafts(): TalkRecoveryDraft[] {
-    const drafts: TalkRecoveryDraft[] = [];
+    const drafts: TalkRecoveryDraft[] = [...recovered.values()];
     for (const entry of conversations.values()) {
       const attachments = entry.attachments?.recoverySnapshot() ?? [];
       const base = { contact: { type: entry.contact.type, apId: entry.contact.ap_id }, content: entry.content, attachments };
@@ -188,12 +205,90 @@ export function createTalkController(options: {
 
   async function checkpointRecovery(expected: number) {
     if (!options.recovery) return;
+    if (!recoveryLoaded) throw new Error("保存済みの下書きの確認が必要です。");
     let revision: number;
     do {
       if (!active(expected)) return;
       revision = recoveryRevision;
       await options.recovery.save(recoveryDrafts());
+      if (active(expected)) savedRecoveryRevision = revision;
     } while (active(expected) && recoveryRevision !== revision);
+  }
+
+  function restoreRecovery(): Promise<void> {
+    if (recoveryLoaded || !options.recovery?.load || recoveryRetired) return Promise.resolve();
+    if (recoveryLoad) return recoveryLoad;
+    const expected = authority;
+    recoveryError = "";
+    recoveryLoad = (async () => {
+      try {
+        const drafts = await options.recovery!.load!();
+        if (!active(expected)) return;
+        for (const item of drafts ?? []) {
+          const key = JSON.stringify([item.contact.type, item.contact.apId]);
+          recovered.set(key, item);
+          const entry = conversations.get(key);
+          if (entry) adoptSaved(entry, key);
+        }
+        recoveryLoaded = true;
+      } catch { if (active(expected)) recoveryError = "保存済みの下書きを確認できませんでした。再確認するまで保存・送信を待機します。"; }
+      finally { if (active(expected)) { recoveryLoad = undefined; publish(); } }
+    })();
+    publish();
+    return recoveryLoad;
+  }
+
+  async function flushRecovery() {
+    clearTimeout(recoveryTimer); recoveryTimer = undefined;
+    if (!options.recovery || recoveryRetired || !active(authority)) return;
+    if (!recoveryLoaded) await restoreRecovery();
+    if (!recoveryLoaded || recoveryRetired || !active(authority)) return;
+    const expected = authority;
+    recoverySaving++; publish();
+    try { await checkpointRecovery(expected); if (active(expected)) { recoveryError = ""; recoveryContactError = ""; } }
+    catch { if (active(expected)) recoveryError = "下書きの保存を確認できませんでした。保存を再試行してください。"; }
+    finally { recoverySaving--; publish(); }
+  }
+
+  async function confirmRecoveryReview() {
+    const entry = selected;
+    if (!entry || !state().recovery?.canConfirmReview || recoveryRetired || !active(authority)) return;
+    // This records a user's review decision, never a delivery ACK.
+    entry.restoredIntent = false; entry.sendIntent = undefined; entry.uncertain = false;
+    entry.sendError = ""; recoveryRevision++;
+    await flushRecovery();
+    publish();
+  }
+
+  function changedRecovery() {
+    recoveryRevision++;
+    if (!options.recovery || !recoveryLoaded || recoveryRetired || recoveryError) return;
+    clearTimeout(recoveryTimer);
+    recoveryTimer = setTimeout(() => { recoveryTimer = undefined; void flushRecovery(); }, 150);
+  }
+
+  function adoptSaved(entry: Conversation, key: string) {
+    const saved = recovered.get(key);
+    if (!saved) return;
+    recovered.delete(key);
+    if (entry.draftRevision === 0) entry.content = saved.content;
+    if (saved.sendState !== "draft") {
+      entry.sendIntent = saved.intent; entry.restoredIntent = true; entry.uncertain = true; entry.localSend = true;
+    }
+    entry.attachments?.restore(saved.attachments);
+  }
+
+  async function openRecovered(item: TalkRecoveryDraft) {
+    if (!active(authority) || !recoveryLoaded) return;
+    const key = JSON.stringify([item.contact.type, item.contact.apId]);
+    if (recovered.get(key) !== item) return;
+    const expected = authority, incarnation = ++view;
+    readAbort?.abort(); const read = new AbortController(); readAbort = read;
+    try {
+      const contact = await loadTalkRecoveryContact(session, { type: item.contact.type, ap_id: item.contact.apId }, read.signal);
+      if (active(expected) && view === incarnation && !read.signal.aborted) { recoveryContactError = ""; await open(contact); }
+    } catch { if (active(expected) && view === incarnation) { recoveryContactError = "保存した相手を確認できませんでした。下書きは保持しています。もう一度開いてください。"; publish(); } }
+    finally { if (readAbort === read) readAbort = undefined; }
   }
 
   function active(expected: number) {
@@ -541,8 +636,9 @@ export function createTalkController(options: {
       entry.attachments = createTalkAttachmentDraft({
         active: () => !disposed && authority === expected && conversations.get(key) === owned,
         upload: (file, signal) => uploadTalkAttachment(session, file, signal),
-        onChange: () => { recoveryRevision++; publish(); },
+        onChange: () => { changedRecovery(); publish(); },
       });
+      adoptSaved(owned, key);
       entry.messageActions = createTalkMessageActions({
         contact: { type: owned.contact.type, ap_id: owned.contact.ap_id },
         session: () => session, actor: () => actorApId,
@@ -582,6 +678,8 @@ export function createTalkController(options: {
 
   async function open(contact: TalkContact, fromRequest = false) {
     if (!active(authority)) return;
+    const openingEpoch = authority;
+    if (!recoveryLoaded) { await restoreRecovery(); if (!active(openingEpoch)) return; }
     selected?.messageActions?.abortRead();
     dismissNotification();
     stopRequests();
@@ -625,8 +723,9 @@ export function createTalkController(options: {
       entry.messages = appendUniqueMobileItemsById(messages, [...entry.confirmed.values()]);
       if (entry.sendOutcome === sendOutcome && !entry.sending) {
         entry.sendError = "";
-        entry.uncertain = false;
+        if (!entry.restoredIntent && (entry.uncertain || entry.sendIntent)) { entry.uncertain = false; entry.sendIntent = undefined; changedRecovery(); }
       }
+      entry.recoveryRead = true;
       entry.pendingRead = entry.messages.length > 0;
       loading = false;
       publish();
@@ -775,10 +874,10 @@ export function createTalkController(options: {
   }
 
   function setDraft(value: string) {
-    if (disposed || !selected || selected.content === value) return;
+    if (disposed || !selected || selected.content === value || !recoveryLoaded) return;
     selected.content = value;
     selected.draftRevision += 1;
-    recoveryRevision++;
+    changedRecovery();
     publish();
   }
 
@@ -798,6 +897,7 @@ export function createTalkController(options: {
   async function send() {
     const entry = selected;
     if (!entry || !canSend(entry)) { publish(); return; }
+    clearTimeout(recoveryTimer); recoveryTimer = undefined;
     const draft = entry.attachments?.snapshot();
     if (!draft) { publish(); return; }
     const expected = authority;
@@ -820,10 +920,12 @@ export function createTalkController(options: {
     publish();
     let accepted = false;
     let dispatched = false;
+    let checkpointConfirmed = !options.recovery;
     try {
       if (options.recovery) {
         await checkpointRecovery(expected);
         if (!active(expected)) return;
+        checkpointConfirmed = true;
         if (entry.sendIntent?.attachments.some(upload => Date.parse(upload.expiresAt) <= Date.now())) {
           throw new Error("添付の期限が切れたため送信しませんでした。もう一度準備してください。");
         }
@@ -852,15 +954,19 @@ export function createTalkController(options: {
       if (!entry.uncertain) entry.sendIntent = undefined;
       recoveryRevision++;
       entry.sendError = errorMessage(cause, "メッセージを送れませんでした。");
+      if (!checkpointConfirmed) recoveryError = "下書きの保存を確認できませんでした。保存を再試行してください。";
     } finally {
       if (entry.sendAbort === abort) entry.sendAbort = undefined;
       if (active(expected)) {
         if (dispatched && options.recovery) {
           try { await checkpointRecovery(expected); }
           catch {
-            if (active(expected)) entry.sendError = accepted
-              ? "送信は確認済みですが、下書きの保存を確認できませんでした。再送せず接続を確認してください。"
-              : "送信結果と下書きの保存を確認できませんでした。自動再送は行いません。";
+            if (active(expected)) {
+              recoveryError = "下書きの保存を確認できませんでした。保存を再試行してください。";
+              entry.sendError = accepted
+                ? "送信は確認済みですが、下書きの保存を確認できませんでした。再送せず接続を確認してください。"
+                : "送信結果と下書きの保存を確認できませんでした。自動再送は行いません。";
+            }
           }
         }
         if (active(expected)) { entry.sending = false; publish(); }
@@ -899,7 +1005,12 @@ export function createTalkController(options: {
   }
 
   function retireConversations() {
+    clearTimeout(recoveryTimer); recoveryTimer = undefined;
     recoveryRetired = !!options.recovery;
+    recovered.clear(); recoveryError = ""; recoveryContactError = "";
+    // The old storage port is permanently closed, but new in-memory input is
+    // still local work until the caller replaces this controller's epoch.
+    recoveryLoaded = true;
     stopRequests();
     requestItems = [];
     requestError = "";
@@ -921,6 +1032,8 @@ export function createTalkController(options: {
   }
 
   function dispose() {
+    if (options.recovery && recoveryLoaded && !recoveryError && !recoveryRetired && savedRecoveryRevision !== recoveryRevision) void flushRecovery();
+    clearTimeout(recoveryTimer); recoveryTimer = undefined;
     stopRequests();
     requestItems = [];
     notificationAbort?.abort();
@@ -952,6 +1065,7 @@ export function createTalkController(options: {
     confirmMessageDelete: () => selected?.messageActions?.submit("delete") ?? Promise.resolve(),
     cancelMessageAction: () => selected?.messageActions?.cancel(),
     reconcileMessageAction: () => selected?.messageActions?.reconcile() ?? Promise.resolve(),
+    restoreRecovery, flushRecovery, confirmRecoveryReview, openRecovered,
     readVisible: () => { void refreshLatest(false); }, dispose };
 }
 

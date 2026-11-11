@@ -87,6 +87,18 @@ the exact conditional revision; compose and edit drafts remain separate, includi
 Unknown mutation results and conflicts require explicit single-message readback, never automatic resend. This works
 for older loaded messages outside the latest page; an unsupported host404 is not deletion proof. Switching actors or
 sessions retires prior work, while changing conversations preserves that conversation's draft and pending result.
+Message edits persist under the same verified saved account row, Host/API, actor
+and conversation, separately from compose text. After restart, explicitly resume
+the saved edit to read the current owned message and revision. Original attempted
+text and newer input remain separate; no PATCH/DELETE is replayed. A matched
+canonical attempt uses the existing reconciliation without an extra review gate.
+A failed pre-PATCH checkpoint refuses the write. A failed final checkpoint is a
+storage error and does not turn a known ACK into an unknown outcome. Edit-only
+records use the existing seven-day review/restore and row-retirement/cleanup
+contract. Old compose-only snapshots remain readable; an older App is not
+qualified to read the new optional edit field. Last input before a completed
+checkpoint, concurrent process writes, real Stronghold/OS termination and device
+updates are separate qualification.
 DM actions require the host's owned-DM reader. Own group messages also expose edit through the community-specific
 single-message reader and group revision. Current read access and authorship remain required. Unsupported hosts or
 revoked access require explicit rechecking; a generic404 never removes the message. Actions on another author's

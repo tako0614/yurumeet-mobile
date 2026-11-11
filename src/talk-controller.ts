@@ -3,7 +3,7 @@ import type { TalkMessagePage, TalkRequest } from "./talk-response.ts";
 import type { TalkNotificationRequest } from "./talk-notification.ts";
 import { createTalkMessageActions, type TalkMessageActionState } from "./talk-message-actions.ts";
 import { createTalkAttachmentDraft, type TalkDraftAttachment } from "./talk-attachments.ts";
-import { TalkRecoveryError, type createTalkRecoveryStore, type TalkRecoveryDraft, type TalkRecoveryIntent, type TalkExpiredRecoveryReview } from "./talk-recovery.ts";
+import { TalkRecoveryError, type createTalkRecoveryStore, type TalkRecoveryDraft, type TalkRecoveryIntent, type TalkRecoveryEdit, type TalkExpiredRecoveryReview } from "./talk-recovery.ts";
 import {
   appendUniqueMobileItemsById,
   prependUniqueMobileItemsByKey,
@@ -35,6 +35,7 @@ export interface TalkState {
   readonly canAddAttachments: boolean;
   readonly messageAction?: TalkMessageActionState;
   readonly canManageMessages: boolean;
+  readonly canEditMessages: boolean;
   readonly requests?: {
     readonly visible: boolean;
     readonly items: readonly TalkRequest[];
@@ -49,6 +50,7 @@ export interface TalkState {
   readonly selected?: TalkContact;
   readonly messages: readonly TalkMessage[];
   readonly content: string;
+  readonly messageEditRecovery?: TalkRecoveryEdit & { readonly canResume: boolean };
   readonly loading: boolean;
   readonly loadingOlder: boolean;
   readonly refreshing: boolean;
@@ -74,6 +76,7 @@ interface Conversation {
   localSend: boolean;
   attachments?: ReturnType<typeof createTalkAttachmentDraft>;
   messageActions?: ReturnType<typeof createTalkMessageActions>;
+  editRecovery?: TalkRecoveryEdit;
   contact: TalkContact;
   messages: readonly TalkMessage[];
   content: string;
@@ -150,18 +153,22 @@ export function createTalkController(options: {
   const conversations = new Map<string, Conversation>();
 
   function state(): TalkState {
+    const canManageMessages = active(authority) && !!actorApId && !!selected && !loading && !loadingOlder &&
+      !selected.sending && !selected.uncertain && !selected.editRecovery && !selected.messageActions?.state();
     return {
       // Home readback can fail after the first send. Keep unfinished local
       // work reachable independently of the server's latest contact list.
       retainedContacts: [...conversations.values()]
-        .filter(entry => entry.localSend || entry.content.length > 0 || !!entry.attachments?.state().items.length || !!entry.messageActions?.state())
+        .filter(entry => entry.localSend || entry.content.length > 0 || !!entry.attachments?.state().items.length || !!entry.messageActions?.state() || !!entry.editRecovery)
         .map(entry => ({ ...entry.contact, last_message: entry.contact.last_message ? { ...entry.contact.last_message } : null })),
       attachments: selected?.attachments?.state().items ?? [],
       attachmentError: selected?.attachments?.state().error ?? "",
-      canAddAttachments: active(authority) && recoveryLoaded && !!actorApId && !!selected && !loading && !selected.messageActions?.state() && selected.attachments?.state().canAdd === true,
+      canAddAttachments: active(authority) && recoveryLoaded && !!actorApId && !!selected && !loading && !selected.editRecovery && !selected.messageActions?.state() && selected.attachments?.state().canAdd === true,
       messageAction: selected?.messageActions?.state(),
-      canManageMessages: active(authority) && !!actorApId && !!selected && !loading && !loadingOlder &&
-        !selected.sending && !selected.uncertain && !selected.messageActions?.state(),
+      messageEditRecovery: selected?.editRecovery && !selected.messageActions?.state()
+        ? { ...selected.editRecovery, canResume: messageRecoveryReady() && !loading && !loadingOlder && !selected.sending && !selected.uncertain } : undefined,
+      canManageMessages,
+      canEditMessages: canManageMessages && messageRecoveryReady(),
       requests: requestsVisible || returnToRequests ? {
         visible: requestsVisible, items: [...requestItems], loading: requestWork === "list",
         opening: requestOpening, rejecting: requestWork === "reject", confirmation: requestConfirmation,
@@ -196,7 +203,7 @@ export function createTalkController(options: {
 
   function canSend(entry: Conversation | undefined): boolean {
     const draft = entry?.attachments?.snapshot();
-    return active(authority) && !recoveryRetired && recoveryLoaded && !recoveryError && !!entry && !!draft && !loading && !entry.sending && !entry.uncertain && !entry.messageActions?.state() &&
+    return active(authority) && !recoveryRetired && recoveryLoaded && !recoveryError && !!entry && !!draft && !loading && !entry.sending && !entry.uncertain && !entry.editRecovery && !entry.messageActions?.state() &&
       (canSubmitMobileText({ value: entry.content, maxLength: 2000 }) || (!entry.content.trim() && draft.attachments.length > 0));
   }
 
@@ -204,9 +211,10 @@ export function createTalkController(options: {
     const drafts: TalkRecoveryDraft[] = [...recovered.values()];
     for (const entry of conversations.values()) {
       const attachments = entry.attachments?.recoverySnapshot() ?? [];
-      const base = { contact: { type: entry.contact.type, apId: entry.contact.ap_id }, content: entry.content, attachments };
+      const edit = entry.messageActions?.snapshot() ?? entry.editRecovery;
+      const base = { contact: { type: entry.contact.type, apId: entry.contact.ap_id }, content: entry.content, attachments, ...(edit ? { edit } : {}) };
       if (entry.sendIntent) drafts.push({ ...base, sendState: entry.sending && !entry.uncertain ? "pending" : "uncertain", intent: entry.sendIntent });
-      else if (entry.content.trim() || attachments.length) drafts.push({ ...base, sendState: "draft" });
+      else if (entry.content.trim() || attachments.length || edit) drafts.push({ ...base, sendState: "draft" });
     }
     return drafts;
   }
@@ -263,6 +271,34 @@ export function createTalkController(options: {
     try { await checkpointRecovery(expected); if (active(expected)) { recoveryError = ""; recoveryContactError = ""; } }
     catch { if (active(expected)) recoveryError = "下書きの保存を確認できませんでした。保存を再試行してください。"; }
     finally { recoverySaving--; publish(); }
+  }
+
+  function messageRecoveryReady() {
+    return !options.recovery || (!recoveryRetired && recoveryLoaded && !recoveryError);
+  }
+
+  async function checkpointMessageAction() {
+    if (!options.recovery) return;
+    const expected = authority;
+    if (!active(expected) || !messageRecoveryReady()) throw new Error("編集の復旧情報を保存できません。");
+    recoverySaving++; publish();
+    try {
+      await checkpointRecovery(expected);
+      if (!active(expected) || recoveryRetired) throw new Error("編集のアカウントscopeが変わりました。");
+      recoveryError = "";
+    } catch (cause) {
+      if (active(expected)) recoveryError = "下書きの保存を確認できませんでした。保存を再試行してください。";
+      throw cause;
+    } finally { recoverySaving--; publish(); }
+  }
+
+  async function resumeMessageEdit() {
+    const entry = selected;
+    if (!entry?.editRecovery || !entry.messageActions || !state().messageEditRecovery?.canResume) return;
+    const work = entry.messageActions.restore(entry.editRecovery);
+    if (!work) return;
+    entry.editRecovery = undefined; changedRecovery(); publish();
+    await work;
   }
 
   async function reviewExpiredRecovery() {
@@ -322,6 +358,7 @@ export function createTalkController(options: {
     if (!saved) return;
     recovered.delete(key);
     if (entry.draftRevision === 0) entry.content = saved.content;
+    entry.editRecovery = saved.edit;
     if (saved.sendState !== "draft") {
       entry.sendIntent = saved.intent; entry.restoredIntent = true; entry.uncertain = true; entry.localSend = true;
     }
@@ -714,7 +751,9 @@ export function createTalkController(options: {
             owned.historyError = "削除したメッセージの前後に未確認の履歴があります。トークを更新して確認してください。";
           }
         },
-        onChange: publish,
+        onChange: () => { changedRecovery(); publish(); },
+        ready: messageRecoveryReady,
+        checkpoint: options.recovery ? checkpointMessageAction : undefined,
         onIdle: () => { if (selected === owned) scheduleReceive(); },
         async afterCommit() {
           try { await options.refreshHome(); }
@@ -1110,8 +1149,9 @@ export function createTalkController(options: {
     captureAttachmentSelection,
     retryAttachment: (id: number) => selected?.attachments?.retry(id),
     removeAttachment: (id: number) => selected?.attachments?.remove(id),
-    beginMessageEdit: (id: string) => selected?.messageActions?.begin("edit", id) ?? Promise.resolve(),
-    beginMessageDelete: (id: string) => selected?.messageActions?.begin("delete", id) ?? Promise.resolve(),
+    beginMessageEdit: (id: string) => selected?.editRecovery ? Promise.resolve() : selected?.messageActions?.begin("edit", id) ?? Promise.resolve(),
+    beginMessageDelete: (id: string) => selected?.editRecovery ? Promise.resolve() : selected?.messageActions?.begin("delete", id) ?? Promise.resolve(),
+    resumeMessageEdit,
     setMessageEditContent: (value: string) => selected?.messageActions?.setContent(value),
     saveMessageEdit: () => selected?.messageActions?.submit("edit") ?? Promise.resolve(),
     confirmMessageDelete: () => selected?.messageActions?.submit("delete") ?? Promise.resolve(),

@@ -127,6 +127,7 @@ function MessageEditPanel(props: {
   return <MobileComposeSection title="メッセージを編集">
     <Show when={props.action.error}><p class="talk-error" role="alert">{props.action.error}</p></Show>
     <Show when={props.action.loading}><p role="status">現在のメッセージを確認中…</p></Show>
+    <Show when={props.action.originalAttempt}><details><summary>結果を確認する元の編集</summary><p style={{ "white-space": "pre-wrap", "overflow-wrap": "anywhere" }}>{props.action.originalAttempt}</p></details></Show>
     <MobileComposeForm onSubmit={event => { event.preventDefault(); props.save(); }}>
       <MobileComposeField label="編集する本文">
         <textarea ref={field} value={props.action.content} maxlength={5000} disabled={props.action.loading}
@@ -170,7 +171,7 @@ export function TalkScreen(props: {
     retainedContacts: [],
     attachments: [], attachmentError: "", canAddAttachments: false,
     messages: [], content: "", loading: false, loadingOlder: false, refreshing: false, gaps: [], hasMore: undefined, historyError: "",
-    sending: false, uncertain: false, canSend: false, canManageMessages: false, error: "",
+    sending: false, uncertain: false, canSend: false, canManageMessages: false, canEditMessages: false, error: "",
   });
   let surface!: HTMLDivElement;
   let peopleInput: HTMLInputElement | undefined, newTalkButton: HTMLButtonElement | undefined;
@@ -314,6 +315,10 @@ export function TalkScreen(props: {
               <For each={drafts()}>{draft => <div>
                 <strong>{draft.contact.apId}</strong>
                 <p style={{ "white-space": "pre-wrap" }}>{draft.content || "本文なし"}</p>
+                <Show when={draft.edit}>{edit => <div>
+                  <p>メッセージ編集：{edit().id}</p><p style={{ "white-space": "pre-wrap", "overflow-wrap": "anywhere" }}>{edit().content}</p>
+                  <Show when={edit().attempted}>{attempt => <><p>結果が未確認の元の編集</p><p style={{ "white-space": "pre-wrap" }}>{attempt().content}</p></>}</Show>
+                </div>}</Show>
                 <For each={draft.attachments}>{attachment => <p>{attachment.phase === "ready"
                   ? `${attachment.upload.attachment.name}（有効期限内の添付）` : `${attachment.name}（元のファイルを再選択）`}</p>}</For>
                 <Show when={draft.sendState !== "draft" && draft.intent}>
@@ -337,6 +342,14 @@ export function TalkScreen(props: {
             </MobilePreviewSection>
           </Show>
         </>}
+      </Show>
+      <Show when={state().messageEditRecovery}>
+        {edit => <MobilePreviewSection title="保存したメッセージ編集">
+          <p>{edit().id}</p><p style={{ "white-space": "pre-wrap", "overflow-wrap": "anywhere" }}>{edit().content}</p>
+          <Show when={edit().attempted}>{attempt => <details><summary>結果を確認する元の編集</summary><p style={{ "white-space": "pre-wrap" }}>{attempt().content}</p></details>}</Show>
+          <p>現在の1件と本人を確認してから編集を続けます。この操作だけでは送信しません。</p>
+          <button type="button" class="text-button" disabled={!edit().canResume} onClick={() => void controller.resumeMessageEdit()}>現在の1件を確認して編集を再開</button>
+        </MobilePreviewSection>}
       </Show>
       <Show when={state().notification}>
         {(notice) => <div role="status" class="talk-error">
@@ -495,7 +508,7 @@ export function TalkScreen(props: {
                         </small>
                         <Show when={message().sender.ap_id === props.home?.actor.ap_id}>
                           <div class="message-action-buttons">
-                            <button type="button" class="text-button" disabled={!state().canManageMessages} onClick={() => void controller.beginMessageEdit(message().id)}>編集</button>
+                            <button type="button" class="text-button" disabled={!state().canEditMessages} onClick={() => void controller.beginMessageEdit(message().id)}>編集</button>
                             <button type="button" class="text-button" disabled={!state().canManageMessages} onClick={() => void controller.beginMessageDelete(message().id)}>削除…</button>
                           </div>
                         </Show>

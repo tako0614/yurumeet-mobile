@@ -1171,7 +1171,16 @@ export function createTalkController(options: {
   }
 
   function dispose() {
-    if (options.recovery && recoveryLoaded && !recoveryError && !recoveryRetired && savedRecoveryRevision !== recoveryRevision) void flushRecovery();
+    if (disposed) return Promise.resolve();
+    // Normal navigation fences the view before Solid disposes it. Snapshot the
+    // last private input while leaving network/UI callbacks fenced. The original
+    // account-scoped port still rejects retirement and credential replacement.
+    let finalSave = Promise.resolve();
+    if (options.recovery && recoveryLoaded && !recoveryError && !recoveryRetired && savedRecoveryRevision !== recoveryRevision) {
+      finalSave = options.recovery.save(recoveryDrafts()).catch(() => {
+        recoveryError = "下書きの最終保存を確認できませんでした。";
+      });
+    }
     clearTimeout(recoveryTimer); recoveryTimer = undefined;
     stopRequests();
     requestItems = [];
@@ -1190,6 +1199,7 @@ export function createTalkController(options: {
     selected = undefined;
     loading = false;
     loadingOlder = false;
+    return finalSave;
   }
 
   return { state, open, openNotification, retryNotification, dismissNotification, showRequests, refreshRequests, openRequest,

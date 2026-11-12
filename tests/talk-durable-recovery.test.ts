@@ -15,6 +15,7 @@ const alice = { type: "user" as const, ap_id: "https://peer.example/users/alice"
 
 function fixture(options: {
   read?: () => Promise<void>;
+  active?: () => boolean;
   write?: (attempt: number, value: string) => Promise<void>;
   post?: (content: string) => Response | Promise<Response>;
   upload?: () => Response;
@@ -43,7 +44,7 @@ function fixture(options: {
     async delete(key) { values.delete(key); },
   };
   const recovery = createTalkRecoveryStore({ store, scope: { product: "yurume", hostUrl: session.hostUrl, actorApId: "me" } });
-  const createController = () => createTalkController({ session, actorApId: "me", recovery,
+  const createController = () => createTalkController({ session, actorApId: "me", recovery, isActive: options.active,
     refreshHome: async () => {}, observedMessageIds: () => [] });
   const controller = createController();
   return { controller, createController, recovery, session, counts: () => ({ posts, writes }),
@@ -377,4 +378,16 @@ test("media that expires while secure storage is pending is not dispatched", asy
     expect(f.controller.state().error).toContain("期限が切れた");
     expect(f.controller.state().attachments[0].phase).toBe("expired");
   } finally { f.close(); }
+});
+
+
+test("normal view deactivation persists the last draft before the debounce", async () => {
+  let active=true;const f=fixture({active:()=>active});
+  try {
+    await f.controller.restoreRecovery();await f.controller.open(alice);
+    f.controller.setDraft("last input before account screen");active=false;
+    await f.controller.dispose();
+    expect((await f.recovery.load())?.[0]?.content).toBe("last input before account screen");
+    expect(f.counts().posts).toBe(0);
+  } finally {f.close();}
 });

@@ -22,6 +22,7 @@ import { createTalkController, type TalkState } from "./talk-controller.ts";
 import { createTalkDiscoveryController, type TalkDiscoveryState } from "./talk-discovery.ts";
 import { talkSessionIdentity } from "./talk-session.ts";
 import { TalkMedia } from "./talk-media.tsx";
+import type { createTalkRecoveryStore } from "./talk-recovery.ts";
 import type { TalkNotificationRequest } from "./talk-notification.ts";
 import type { TalkRequest } from "./talk-response.ts";
 import type { TalkMessageActionState } from "./talk-message-actions.ts";
@@ -126,6 +127,7 @@ function MessageEditPanel(props: {
   return <MobileComposeSection title="メッセージを編集">
     <Show when={props.action.error}><p class="talk-error" role="alert">{props.action.error}</p></Show>
     <Show when={props.action.loading}><p role="status">現在のメッセージを確認中…</p></Show>
+    <Show when={props.action.originalAttempt}><details><summary>結果を確認する元の編集</summary><p style={{ "white-space": "pre-wrap", "overflow-wrap": "anywhere" }}>{props.action.originalAttempt}</p></details></Show>
     <MobileComposeForm onSubmit={event => { event.preventDefault(); props.save(); }}>
       <MobileComposeField label="編集する本文">
         <textarea ref={field} value={props.action.content} maxlength={5000} disabled={props.action.loading}
@@ -160,6 +162,7 @@ export function TalkScreen(props: {
   isActive?: () => boolean;
   notificationRequest?: TalkNotificationRequest;
   onNotificationConsumed?: (request: TalkNotificationRequest) => void;
+  recovery?: ReturnType<typeof createTalkRecoveryStore>;
 }) {
   const [foreground, setForeground] = createSignal(document.visibilityState !== "hidden", { equals: false });
   const [fileSelectionError, setFileSelectionError] = createSignal("");
@@ -168,7 +171,7 @@ export function TalkScreen(props: {
     retainedContacts: [],
     attachments: [], attachmentError: "", canAddAttachments: false,
     messages: [], content: "", loading: false, loadingOlder: false, refreshing: false, gaps: [], hasMore: undefined, historyError: "",
-    sending: false, uncertain: false, canSend: false, canManageMessages: false, error: "",
+    sending: false, uncertain: false, canSend: false, canManageMessages: false, canEditMessages: false, error: "",
   });
   let surface!: HTMLDivElement;
   let peopleInput: HTMLInputElement | undefined, newTalkButton: HTMLButtonElement | undefined;
@@ -177,6 +180,7 @@ export function TalkScreen(props: {
     searched: false, loading: false, opening: undefined, hasMore: false, error: "" });
   const controller = createTalkController({
     session: props.session,
+    recovery: props.recovery,
     actorApId: props.home?.actor.ap_id,
     refreshHome: () => props.refreshHome(),
     onChange: next => {
@@ -236,16 +240,21 @@ export function TalkScreen(props: {
   });
   onCleanup(() => { discoveryController.dispose(); controller.dispose(); });
   onMount(() => {
+    void controller.restoreRecovery();
     const update = () => {
+      if (document.visibilityState === "hidden") void controller.flushRecovery();
       setForeground(document.visibilityState !== "hidden"); controller.foregroundChanged();
       if (document.visibilityState === "hidden") discoveryController.suspend();
     };
     const readVisible = () => controller.readVisible();
     document.addEventListener("visibilitychange", update);
+    const persist = () => { void controller.flushRecovery(); };
+    window.addEventListener("pagehide", persist);
     window.addEventListener("online", update);
     window.addEventListener("scroll", readVisible, { passive: true });
     onCleanup(() => {
       document.removeEventListener("visibilitychange", update);
+      window.removeEventListener("pagehide", persist);
       window.removeEventListener("online", update);
       window.removeEventListener("scroll", readVisible);
     });
@@ -288,6 +297,73 @@ export function TalkScreen(props: {
 
   return (
     <div class="talk-surface" ref={surface}>
+      <Show when={state().recovery}>
+        {recovery => <>
+          <Show when={recovery().loading || recovery().saving}><p role="status">{recovery().loading ? "保存した下書きを確認中…" : "下書きを保存中…"}</p></Show>
+          <Show when={recovery().reviewingExpired}><p role="status">期限切れの下書きを確認中…</p></Show>
+          <Show when={recovery().error}><div role="alert" class="talk-error">
+            <p>{recovery().error}</p>
+            <button type="button" class="text-button" disabled={recovery().loading || recovery().saving || recovery().reviewingExpired || recovery().reviewingInvalid}
+              onClick={() => void controller.flushRecovery()}>下書きの確認・保存を再試行</button>
+            <Show when={recovery().canReviewExpired}>
+              <button type="button" class="text-button" onClick={() => void controller.reviewExpiredRecovery()}>期限切れの下書きを確認</button>
+            </Show>
+            <Show when={recovery().canReviewInvalid}>
+              <button type="button" class="text-button" onClick={() => void controller.reviewInvalidRecovery()}>破損した下書きの破棄を確認</button>
+            </Show>
+          </div></Show>
+          <Show when={recovery().invalidDraftReview}>
+            <MobilePreviewSection title="破損した下書きを破棄しますか">
+              <p>このアカウント・接続先の端末内の下書きを破棄します。本文・添付・未確認の送信や編集の記録は復元できません。</p>
+              <p>破棄しても送信・編集結果は確定しません。履歴を確認してください。他のアカウントやサーバーのデータは削除しません。</p>
+              <button type="button" class="text-button" disabled={recovery().saving}
+                onClick={() => void controller.discardInvalidRecovery()}>この端末の下書きを破棄</button>
+              <button type="button" class="text-button" disabled={recovery().saving}
+                onClick={() => controller.cancelInvalidRecoveryReview()}>破棄せず戻る</button>
+            </MobilePreviewSection>
+          </Show>
+          <Show when={recovery().expiredDrafts}>
+            {drafts => <MobilePreviewSection title="期限切れの下書き">
+              <p>復元しても送信しません。相手と内容を確認してください。未確認の送信は別途確認が必要です。</p>
+              <For each={drafts()}>{draft => <div>
+                <strong>{draft.contact.apId}</strong>
+                <p style={{ "white-space": "pre-wrap" }}>{draft.content || "本文なし"}</p>
+                <Show when={draft.edit}>{edit => <div>
+                  <p>メッセージ編集：{edit().id}</p><p style={{ "white-space": "pre-wrap", "overflow-wrap": "anywhere" }}>{edit().content}</p>
+                  <Show when={edit().attempted}>{attempt => <><p>結果が未確認の元の編集</p><p style={{ "white-space": "pre-wrap" }}>{attempt().content}</p></>}</Show>
+                </div>}</Show>
+                <For each={draft.attachments}>{attachment => <p>{attachment.phase === "ready"
+                  ? `${attachment.upload.attachment.name}（有効期限内の添付）` : `${attachment.name}（元のファイルを再選択）`}</p>}</For>
+                <Show when={draft.sendState !== "draft" && draft.intent}>
+                  {intent => <div><p>送信結果が未確認の元の内容</p><p style={{ "white-space": "pre-wrap" }}>{intent().content || "本文なし"}</p>
+                    <For each={intent().attachments}>{upload => <p>{upload.attachment.name}</p>}</For>
+                  </div>}
+                </Show>
+              </div>}</For>
+              <button type="button" class="text-button" disabled={recovery().saving}
+                onClick={() => void controller.restoreExpiredRecovery()}>確認した下書きを復元</button>
+              <button type="button" class="text-button" disabled={recovery().saving}
+                onClick={() => controller.cancelExpiredRecoveryReview()}>確認を閉じる</button>
+            </MobilePreviewSection>}
+          </Show>
+          <Show when={!selected() && recovery().drafts.length}>
+            <MobilePreviewSection title="保存した下書き・未確認の送信">
+              <For each={recovery().drafts}>{draft => <div class="message-action-buttons">
+                <span>{draft.contact.apId}</span>
+                <button type="button" class="text-button" onClick={() => void controller.openRecovered(draft)}>相手を確認して開く</button>
+              </div>}</For>
+            </MobilePreviewSection>
+          </Show>
+        </>}
+      </Show>
+      <Show when={state().messageEditRecovery}>
+        {edit => <MobilePreviewSection title="保存したメッセージ編集">
+          <p>{edit().id}</p><p style={{ "white-space": "pre-wrap", "overflow-wrap": "anywhere" }}>{edit().content}</p>
+          <Show when={edit().attempted}>{attempt => <details><summary>結果を確認する元の編集</summary><p style={{ "white-space": "pre-wrap" }}>{attempt().content}</p></details>}</Show>
+          <p>現在の1件と本人を確認してから編集を続けます。この操作だけでは送信しません。</p>
+          <button type="button" class="text-button" disabled={!edit().canResume} onClick={() => void controller.resumeMessageEdit()}>現在の1件を確認して編集を再開</button>
+        </MobilePreviewSection>}
+      </Show>
       <Show when={state().notification}>
         {(notice) => <div role="status" class="talk-error">
           <p>{notice().loading ? "通知先のトークを確認中…" : notice().error}</p>
@@ -445,7 +521,7 @@ export function TalkScreen(props: {
                         </small>
                         <Show when={message().sender.ap_id === props.home?.actor.ap_id}>
                           <div class="message-action-buttons">
-                            <button type="button" class="text-button" disabled={!state().canManageMessages} onClick={() => void controller.beginMessageEdit(message().id)}>編集</button>
+                            <button type="button" class="text-button" disabled={!state().canEditMessages} onClick={() => void controller.beginMessageEdit(message().id)}>編集</button>
                             <button type="button" class="text-button" disabled={!state().canManageMessages} onClick={() => void controller.beginMessageDelete(message().id)}>削除…</button>
                           </div>
                         </Show>
@@ -469,6 +545,14 @@ export function TalkScreen(props: {
               <Show when={state().uncertain}>
                 <p role="status">送信結果が未確認です。トークを更新し、同じ内容が届いていないか確認してから操作してください。</p>
               </Show>
+              <Show when={state().recovery?.intent}>{intent => <div role="status">
+                <p>再起動前の送信結果は未確認です。履歴と元の内容を確認してください。</p>
+                <p class="message-delete-preview">{intent().content || "本文なし"}</p>
+                <For each={intent().attachments}>{upload => <p>{upload.attachment.name}</p>}</For>
+                <button type="button" class="text-button" disabled={!state().recovery?.canConfirmReview}
+                  onClick={() => void controller.confirmRecoveryReview()}>履歴と元の内容を確認した・次の送信を許可</button>
+                <small>この操作は届いたことを確定せず、自動再送もしません。</small>
+              </div>}</Show>
               <MobileComposeForm
                 onSubmit={(event) => {
                   event.preventDefault();
@@ -478,6 +562,7 @@ export function TalkScreen(props: {
                 <MobileComposeField label="本文">
                   <textarea
                     maxlength={2000}
+                    disabled={!!state().recovery && !state().recovery?.ready}
                     value={content()}
                     onInput={(event) => controller.setDraft(event.currentTarget.value)}
                   />

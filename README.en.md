@@ -1,5 +1,8 @@
 # Yurumeet Mobile
 
+If startup cannot read saved account data or the launch bridge, the screen reports a generic failure and offers **Retry** without displaying raw exception details.
+Each retry is explicit and deduplicated; it cannot register a replacement launch listener until prior cleanup is confirmed. A read failure is not accepted as an empty saved-account list.
+
 Android Back follows the active confirmation dialog, message editor, search,
 conversation or request list. An uncertain send or change is never cancelled
 or resent by Back: its conversation draft and pending state remain available
@@ -66,13 +69,43 @@ retaining its pending send and draft. Sign-out or a change of credentials or API
 sends and cached conversation data, so late responses cannot appear in the next account.
 Conversations with drafts or an explicit send action in this app remain reachable from the list if home refresh fails.
 These local routes do not assert that the server retains history or accepted the send.
-This recovery lasts for the current app lifetime; it does not persist drafts across app termination or reload.
+Drafts are saved through the existing secure storage after a 150 ms input pause and restored for the same saved account after restart or reload.
+Sending waits when secure storage or the saved snapshot cannot be verified; retry the recovery check or save explicitly.
+The last input may be lost if the app terminates before its write completes. File bytes are not persisted.
+After seven days, a snapshot requires explicit read-only review before restoring it. Closing the review changes or deletes nothing.
+Confirmation restores only the same stored bytes that were reviewed; newer saves, corrupt data and another scope cannot be overwritten through this path.
+Expired attachments require selecting the original file again. Restoration neither sends a message nor resolves an unknown result.
+When a current-format snapshot has an identifiable scope but corrupt draft contents, explicitly review and confirm discarding that device-local snapshot to recover without signing out.
+Opening or cancelling confirmation changes nothing; discard rechecks the exact stored bytes and refuses changed data, retired scopes, or failed reads/deletes.
+This loses the selected scope's drafts, attachment references and unknown-attempt records, without resolving delivery/edit outcomes or deleting other accounts, APIs or server data.
+Unreadable/foreign headers and unsupported versions cannot authorize discard. Serialization is within this process, not atomic CAS across processes.
+An interrupted or unknown send retains its original body/media separately from newer input and is never replayed automatically.
+Review the history and original payload, then explicitly allow the next send. This decision does not confirm delivery.
+Saved contacts are resolved through the authenticated API; expired or unfinished media requires selecting the original file again.
+Storage is partitioned by host, saved account row, verified actor and API root. Switching accounts preserves drafts;
+sign-out or authority eviction deletes only the removed row. The row and its actual retirement intent are recorded in secure storage before deletion,
+so a failed purge remains reachable after app restart through the explicit draft-deletion retry. Absence from an account list alone never authorizes deletion;
+other saved accounts and a fresh row for the same person are preserved. If the account list or cleanup record cannot be read, deletion waits for explicit recheck.
+Discovery is not guaranteed when recording the retirement intent itself failed, or for orphaned data from before this index existed.
+Recovery creates no server ACK or idempotency authority. OS crash, Stronghold and device update/rollback qualification are separate.
 
 Own DM messages expose native edit and confirmed delete actions. A fresh author-only single-message read supplies
 the exact conditional revision; compose and edit drafts remain separate, including newer input during a save ACK.
 Unknown mutation results and conflicts require explicit single-message readback, never automatic resend. This works
 for older loaded messages outside the latest page; an unsupported host404 is not deletion proof. Switching actors or
 sessions retires prior work, while changing conversations preserves that conversation's draft and pending result.
+Message edits persist under the same verified saved account row, Host/API, actor
+and conversation, separately from compose text. After restart, explicitly resume
+the saved edit to read the current owned message and revision. Original attempted
+text and newer input remain separate; no PATCH/DELETE is replayed. A matched
+canonical attempt uses the existing reconciliation without an extra review gate.
+A failed pre-PATCH checkpoint refuses the write. A failed final checkpoint is a
+storage error and does not turn a known ACK into an unknown outcome. Edit-only
+records use the existing seven-day review/restore and row-retirement/cleanup
+contract. Old compose-only snapshots remain readable; an older App is not
+qualified to read the new optional edit field. Last input before a completed
+checkpoint, concurrent process writes, real Stronghold/OS termination and device
+updates are separate qualification.
 DM actions require the host's owned-DM reader. Own group messages also expose edit through the community-specific
 single-message reader and group revision. Current read access and authorship remain required. Unsupported hosts or
 revoked access require explicit rechecking; a generic404 never removes the message. Actions on another author's

@@ -16,6 +16,7 @@ const messages = {
   "invalid-scope": "Invalid recovery scope.",
   "invalid-data": "Recovery data could not be verified.",
   expired: "Recovery data has expired; manual review is required.",
+  changed: "Recovery data changed; review the current snapshot again.",
   storage: "Recovery storage did not confirm the operation.",
   retired: "This recovery scope has been retired.",
 };
@@ -73,6 +74,28 @@ interface TalkRecoveryDraftFields {
   readonly contact: { readonly type: "user" | "community"; readonly apId: string };
   readonly content: string;
   readonly attachments: readonly TalkRecoveryAttachment[];
+  readonly edit?: TalkRecoveryEdit;
+}
+
+/** Local editing data only. A restored action must obtain a fresh owned revision. */
+export interface TalkRecoveryEdit {
+  readonly id: string;
+  readonly content: string;
+  readonly baseContent: string;
+  readonly attempted?: { readonly content: string; readonly draft: string };
+}
+
+export function copyTalkRecoveryEdit(value: unknown): TalkRecoveryEdit {
+  const text = (input: unknown): input is string => typeof input === "string" && input.length <= 64 * 1024 && new TextEncoder().encode(input).byteLength <= 64 * 1024;
+  if (!record(value, ["id", "content", "baseContent", "attempted"]) || !isTalkNotificationId(value.id) || !text(value.content) || !text(value.baseContent)) throw new TalkRecoveryError("invalid-data");
+  let attempted: TalkRecoveryEdit["attempted"];
+  if (value.attempted !== undefined) {
+    const item = value.attempted;
+    if (!record(item, ["content", "draft"]) || !text(item.content) || !text(item.draft) || !item.content ||
+      item.content.length > 5000 || item.content !== item.content.trim() || item.draft.trim() !== item.content) throw new TalkRecoveryError("invalid-data");
+    attempted = { content: item.content, draft: item.draft };
+  }
+  return { id: value.id, content: value.content, baseContent: value.baseContent, ...(attempted ? { attempted } : {}) };
 }
 
 /** Original attempted payload, retained for manual reconciliation, never replay authority. */
@@ -87,6 +110,16 @@ export type TalkRecoveryDraft = TalkRecoveryDraftFields & (
   | { readonly sendState: "draft"; readonly intent?: never }
   | { readonly sendState: "pending" | "uncertain"; readonly intent: TalkRecoveryIntent }
 );
+
+/** Read-only preview; restoring it is conditional on the original bytes still being current. */
+export interface TalkExpiredRecoveryReview {
+  readonly drafts: readonly TalkRecoveryDraft[];
+  restore: () => Promise<void>;
+}
+
+export interface TalkInvalidRecoveryReview {
+  discard: () => Promise<void>;
+}
 
 export type TalkRecoveryAttachment =
   | { readonly phase: "ready"; readonly upload: TalkUpload }
@@ -145,7 +178,7 @@ function verifiedDrafts(value: unknown, time: number): TalkRecoveryDraft[] {
   if (!Array.isArray(value) || value.length > 100) throw new TalkRecoveryError("invalid-data");
   const result: TalkRecoveryDraft[] = [], contacts = new Set<string>();
   for (const item of value) {
-    if (!record(item, ["contact", "content", "sendState", "attachments", "intent"]) ||
+    if (!record(item, ["contact", "content", "sendState", "attachments", "intent", "edit"]) ||
       !record(item.contact, ["type", "apId"]) || (item.contact.type !== "user" && item.contact.type !== "community") ||
       !isTalkNotificationId(item.contact.apId) || typeof item.content !== "string" || item.content.length > 2000 ||
       (item.sendState !== "draft" && item.sendState !== "pending" && item.sendState !== "uncertain") ||
@@ -156,9 +189,9 @@ function verifiedDrafts(value: unknown, time: number): TalkRecoveryDraft[] {
     if (contacts.has(contactKey)) throw new TalkRecoveryError("invalid-data");
     contacts.add(contactKey);
     const base: TalkRecoveryDraftFields = { contact: { type: item.contact.type, apId: item.contact.apId }, content: item.content,
-      attachments: verifiedAttachments(item.attachments, time) };
+      attachments: verifiedAttachments(item.attachments, time), ...(item.edit === undefined ? {} : { edit: copyTalkRecoveryEdit(item.edit) }) };
     if (item.sendState === "draft") {
-      if (item.intent !== undefined || (!item.content.trim() && !item.attachments.length)) throw new TalkRecoveryError("invalid-data");
+      if (item.intent !== undefined || (!item.content.trim() && !item.attachments.length && !base.edit)) throw new TalkRecoveryError("invalid-data");
       result.push({ ...base, sendState: "draft" });
     } else {
       result.push({ ...base, sendState: item.sendState, intent: verifiedIntent(item.intent) });
@@ -178,6 +211,17 @@ interface RecoveryScopeState {
   retirement?: Promise<void>;
 }
 const storeStates = new WeakMap<MobileSecureStore, RecoveryStoreState>();
+
+function snapshotHeader(raw: string, key: string, time: number) {
+  try {
+    bounded(raw);
+    const data: unknown = JSON.parse(raw);
+    if (!record(data, ["version", "scope", "savedAt", "expiresAt", "drafts"]) || data.version !== 1 || data.scope !== key ||
+      !Number.isSafeInteger(data.savedAt) || (data.savedAt as number) < 0 || !Number.isSafeInteger(data.expiresAt) ||
+      data.expiresAt !== (data.savedAt as number) + lifetimeMs || (data.savedAt as number) > time) throw new Error();
+    return { drafts: data.drafts, expiresAt: data.expiresAt as number };
+  } catch { throw new TalkRecoveryError("invalid-data"); }
+}
 
 /**
  * Product secure-store primitive, not yet a controller/OS recovery implementation.
@@ -228,6 +272,14 @@ export function createTalkRecoveryStore(options: {
   function live() {
     if (owned.retired || shared.scopes.get(scope) !== owned) throw new TalkRecoveryError("retired");
   }
+  function verifyInvalidDrafts(raw: string, key: string) {
+    const time = currentTime(), data = snapshotHeader(raw, key, time);
+    // Only an identifiable current-version snapshot may be offered for discard.
+    // An unreadable header, foreign scope or future version is never deletion authority.
+    try { verifiedDrafts(data.drafts, time); }
+    catch (cause) { if (cause instanceof TalkRecoveryError && cause.code === "invalid-data") return; throw cause; }
+    throw new TalkRecoveryError("changed");
+  }
   return {
     async save(drafts: readonly TalkRecoveryDraft[]) {
       live();
@@ -253,19 +305,61 @@ export function createTalkRecoveryStore(options: {
         const raw = await storageOperation(() => store.get(key));
         live();
         if (raw === undefined) return null;
-        try {
-          bounded(raw);
-          const data: unknown = JSON.parse(raw);
-          const time = currentTime();
-          if (!record(data, ["version", "scope", "savedAt", "expiresAt", "drafts"]) || data.version !== 1 || data.scope !== key ||
-            !Number.isSafeInteger(data.savedAt) || (data.savedAt as number) < 0 || !Number.isSafeInteger(data.expiresAt) ||
-            data.expiresAt !== (data.savedAt as number) + lifetimeMs || (data.savedAt as number) > time) throw new Error();
-          if (time >= (data.expiresAt as number)) throw new TalkRecoveryError("expired");
-          return verifiedDrafts(data.drafts, time);
-        } catch (cause) {
-          if (cause instanceof TalkRecoveryError) throw cause;
-          throw new TalkRecoveryError("invalid-data");
-        }
+        const time = currentTime(), data = snapshotHeader(raw, key, time);
+        if (time >= data.expiresAt) throw new TalkRecoveryError("expired");
+        return verifiedDrafts(data.drafts, time);
+      });
+    },
+    async reviewExpired(): Promise<TalkExpiredRecoveryReview> {
+      live();
+      return queued(async () => {
+        live();
+        const key = await storageKey();
+        live();
+        const raw = await storageOperation(() => store.get(key));
+        live();
+        if (raw === undefined) throw new TalkRecoveryError("changed");
+        const time = currentTime(), data = snapshotHeader(raw, key, time);
+        if (time < data.expiresAt) throw new TalkRecoveryError("changed");
+        const drafts = verifiedDrafts(data.drafts, time);
+        return {
+          drafts,
+          restore: () => queued(async () => {
+            live();
+            const current = await storageOperation(() => store.get(key));
+            live();
+            if (current !== raw) throw new TalkRecoveryError("changed");
+            const savedAt = currentTime(), original = snapshotHeader(raw, key, savedAt);
+            if (savedAt < original.expiresAt) throw new TalkRecoveryError("changed");
+            // Re-decode the original bytes; a caller cannot edit preview data into the write.
+            const encoded = JSON.stringify({ version: 1, scope: key, savedAt, expiresAt: savedAt + lifetimeMs,
+              drafts: verifiedDrafts(original.drafts, savedAt) });
+            bounded(encoded);
+            await storageOperation(() => store.set(key, encoded));
+            live();
+          }),
+        };
+      });
+    },
+    async reviewInvalid(): Promise<TalkInvalidRecoveryReview> {
+      live();
+      return queued(async () => {
+        live();
+        const key = await storageKey();
+        live();
+        const raw = await storageOperation(() => store.get(key));
+        live();
+        if (raw === undefined) throw new TalkRecoveryError("changed");
+        verifyInvalidDrafts(raw, key);
+        return { discard: () => queued(async () => {
+          live();
+          const current = await storageOperation(() => store.get(key));
+          live();
+          if (current !== raw) throw new TalkRecoveryError("changed");
+          verifyInvalidDrafts(raw, key);
+          await storageOperation(() => store.delete(key));
+          live();
+        }) };
       });
     },
     retire(): Promise<void> {
